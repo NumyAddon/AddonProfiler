@@ -1,0 +1,13 @@
+## Title: AddonProfiler
+## Version: @project-version@
+## Interface: @toc-version-retail@
+## Notes: AddonProfiler is a pretty UI for blizzard's addon profiling stats.
+## Author: Numy
+## SavedVariables: AddonProfilerDB
+## IconTexture: Interface\Addons\!!AddonProfiler\media\icon
+## OptionalDeps: !BugGrabber
+## X-Curse-Project-ID: 1163936
+## X-Wago-ID: XKq9nlKy
+
+libs\embeds.xml
+AddonProfiler.lua

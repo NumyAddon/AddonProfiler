@@ -176,8 +176,8 @@ function NAP:InitUI()
     local ORDER_ASC = 1;
     local ORDER_DESC = -1;
 
-    local TIME_FORMAT = "|cfff8f8f2%.3f|r|cfff92672ms|r";
-    local ROUND_TIME_FORMAT = "|cfff8f8f2%d|r|cfff92672ms|r";
+    local TIME_FORMAT = "|cfff8f8f2%.3f|r|cff808080ms|r";
+    local ROUND_TIME_FORMAT = "|cfff8f8f2%d|r|cff808080ms|r";
     local COLUMN_INFO = {
         {
             title = "Addon Name",
@@ -189,16 +189,12 @@ function NAP:InitUI()
                 ---@param a NAP_ElementData
                 ---@param b NAP_ElementData
                 [ORDER_ASC] = function(a, b)
-                    return a.addonTitle > b.addonTitle
-                        or a.addonTitle == b.addonTitle
-                        and a.addonName > b.addonName;
+                    return strcmputf8i(StripHyperlinks(a.addonTitle), StripHyperlinks(b.addonTitle)) > 0
                 end,
                 ---@param a NAP_ElementData
                 ---@param b NAP_ElementData
                 [ORDER_DESC] = function(a, b)
-                    return a.addonTitle < b.addonTitle
-                        or a.addonTitle == b.addonTitle
-                        and a.addonName < b.addonName;
+                    return strcmputf8i(StripHyperlinks(a.addonTitle), StripHyperlinks(b.addonTitle)) < 0
                 end,
             }
         },
@@ -281,7 +277,7 @@ function NAP:InitUI()
             title = "Over " .. ms .. "ms",
             width = 85,
             order = ORDER_ASC,
-            textFormat = "|cfff8f8f2%d|r",
+            textFormat = "|cfff8f8f2%d|r|cff808080x|r",
             textKey = "over" .. ms .. "Ms",
             tooltip = "How many times the addon took longer than " .. ms .. "ms per frame.",
             sortMethods = {
@@ -580,8 +576,7 @@ function NAP:InitUI()
             ---@type NAP_ElementData
             local data = self:GetElementData()
             if data then
-                GameTooltip:SetOwner(self, "ANCHOR_NONE")
-                GameTooltip:SetPoint("TOPLEFT", self, "TOPRIGHT", 26, 2)
+                GameTooltip:SetOwner(self, "ANCHOR_CURSOR_RIGHT", 5, 5)
                 GameTooltip:AddLine(data.addonTitle)
                 GameTooltip:AddLine(data.addonName, 1, 1, 1)
                 local notes = NAP.addons[data.addonName] and NAP.addons[data.addonName].notes

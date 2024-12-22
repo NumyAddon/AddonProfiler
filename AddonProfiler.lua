@@ -172,7 +172,7 @@ function NAP:InitUI()
     local COLUMN_INFO = {
         {
             title = "Addon Name",
-            width = 384,
+            width = 300,
             order = ORDER_ASC,
             textFormat = "%s",
             textKey = "addonTitle",

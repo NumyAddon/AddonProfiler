@@ -68,7 +68,17 @@ function NAP:Init()
     SLASH_NUMY_ADDON_PROFILER2 = '/addonprofile';
     SLASH_NUMY_ADDON_PROFILER3 = '/addonprofiler';
     SLASH_NUMY_ADDON_PROFILER4 = '/addoncpu';
-    SlashCmdList['NUMY_ADDON_PROFILER'] = function()
+    SlashCmdList['NUMY_ADDON_PROFILER'] = function(message)
+        if message == 'reset' then
+            wipe(self.db.minimap);
+            self.db.minimap.hide = false;
+
+            local name = 'NumyAddonProfiler';
+            LibStub('LibDBIcon-1.0'):Hide(name);
+            LibStub('LibDBIcon-1.0'):Show(name);
+
+            return;
+        end
         self:ToggleFrame();
     end;
 end
@@ -155,7 +165,6 @@ function NAP:InitDataCollector()
     self.collectData = true;
     -- continiously purge older entires
     self.purgerTicker = C_Timer.NewTicker(5, function() self:PurgeOldData() end)
-
 end
 
 function NAP:InitUI()
@@ -270,9 +279,9 @@ function NAP:InitUI()
     for _, ms in ipairs(msOptions) do
         t_insert(COLUMN_INFO, {
             title = "Over " .. ms .. "ms",
-            width = 96,
+            width = 85,
             order = ORDER_ASC,
-            textFormat = "|cfff8f8f2%d|r |cfff92672x|r",
+            textFormat = "|cfff8f8f2%d|r",
             textKey = "over" .. ms .. "Ms",
             tooltip = "How many times the addon took longer than " .. ms .. "ms per frame.",
             sortMethods = {
@@ -349,7 +358,7 @@ function NAP:InitUI()
         local minTimestamp = GetTime() - self.curHistoryRange;
 
         for addonName, info in pairs(self.addons) do
-            if info.title:lower():match(curMatch) then
+            if info.loaded and info.title:lower():match(curMatch) then
                 ---@type NAP_ElementData
                 ---@diagnostic disable-next-line: missing-fields
                 local data = {
@@ -440,6 +449,7 @@ function NAP:InitUI()
         end
 
         self.ProfilerFrame = Mixin(CreateFrame("Frame", "NumyAddonProfilerFrame", UIParent, "ButtonFrameTemplate"), profilerFrameMixin)
+        t_insert(UISpecialFrames, self.ProfilerFrame:GetName())
         local display = self.ProfilerFrame
         local width = 2;
         for _, info in pairs(COLUMN_INFO) do
@@ -486,17 +496,7 @@ function NAP:InitUI()
         local function onSelection(data)
             self.curHistoryRange = data;
 
-            prepareFilteredData();
-            sortFilteredData();
-
-            local perc = display.ScrollBox:GetScrollPercentage();
-            display.ScrollBox:Flush();
-
-            if self.dataProvider then
-                display.ScrollBox:SetDataProvider(self.dataProvider);
-                display.ScrollBox:SetScrollPercentage(perc);
-            end
-            display.Stats:Update();
+            display.elapsed = 50
         end
         MenuUtil.CreateRadioMenu(historyMenu, isSelected, onSelection, unpack(historyOptions));
         display.HistoryDropdown = historyMenu
@@ -512,18 +512,7 @@ function NAP:InitUI()
             local text = s_trim(self:GetText()):lower()
             curMatch = text == "" and ".+" or text
 
-            prepareFilteredData()
-            sortFilteredData()
-
-            local perc = display.ScrollBox:GetScrollPercentage()
-            display.ScrollBox:Flush()
-
-            if NAP.dataProvider then
-                display.ScrollBox:SetDataProvider(NAP.dataProvider)
-                display.ScrollBox:SetScrollPercentage(perc)
-            end
-
-            display.Stats:Update()
+            display.elapsed = 50
         end)
 
         local headers = CreateFrame("Button", "$parentHeaders", display, "ColumnDisplayTemplate")
@@ -927,7 +916,14 @@ function NAP:InitMinimapButton()
             type = 'launcher',
             text = 'Addon Profiler',
             icon = getIcon(),
-            OnClick = function(minimapButton, button)
+            OnClick = function(_, button)
+                if IsShiftKeyDown() then
+                    self.db.minimap.hide = true;
+                    LibStub('LibDBIcon-1.0'):Hide(name);
+                    print('Minimap button hidden. Use |cffeda55f/nap reset|r to restore.');
+
+                    return;
+                end
                 if button == 'LeftButton' then
                     self:ToggleFrame();
                 else
@@ -947,6 +943,7 @@ function NAP:InitMinimapButton()
                 ))
                 tooltip:AddLine('|cffeda55fLeft-Click|r to toggle the frame')
                 tooltip:AddLine('|cffeda55fRight-Click|r to toggle logging')
+                tooltip:AddLine('|cffeda55fShift-Click|r to hide this button. (|cffeda55f/nap reset|r to restore)');
             end,
         }
     );

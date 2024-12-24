@@ -31,6 +31,8 @@ NAP.resetBaselineMetrics = NAP.initialMetrics;
 NAP.snapshots = {};
 --- @type table<string, { title: string, notes: string, loaded: boolean, loadedBeforeProfiler: boolean }>
 NAP.addons = {};
+--- @type string[] # list of addon names
+NAP.loadedAddons = {};
 
 --- Note: NAP:Init() is called at the end of the script body, BEFORE the addon_loaded event
 function NAP:Init()
@@ -54,6 +56,9 @@ function NAP:Init()
             loaded = isLoaded,
             loadedBeforeProfiler = isLoaded,
         };
+        if isLoaded then
+            t_insert(self.loadedAddons, addonName);
+        end
     end
     self.currentMetrics = CopyTable(self.initialMetrics);
 
@@ -95,6 +100,7 @@ function NAP:ADDON_LOADED(addonName)
     end
     if not self.addons[addonName] then return end
 
+    t_insert(self.loadedAddons, addonName);
     self.addons[addonName].loadedBeforeProfiler = false;
     self.addons[addonName].loaded = true;
 end
@@ -105,13 +111,11 @@ function NAP:OnUpdate()
     if not self.collectData then return end
     local snapshot;
 
-    for addonName in pairs(self.addons) do
-        if self.addons[addonName].loaded then
-            local metrics = self:GetMetrics(addonName);
-            if metrics then
-                if not snapshot then snapshot = {[TIMESTAMP_INDEX] = GetTime(), [DATA_INDEX] = {}} end
-                snapshot[DATA_INDEX][addonName] = metrics;
-            end
+    for _, addonName in pairs(self.loadedAddons) do
+        local metrics = self:GetMetrics(addonName);
+        if metrics then
+            if not snapshot then snapshot = {[TIMESTAMP_INDEX] = GetTime(), [DATA_INDEX] = {}} end
+            snapshot[DATA_INDEX][addonName] = metrics;
         end
     end
     if snapshot then

@@ -10,6 +10,8 @@ NAP.eventFrame = CreateFrame('Frame');
 
 _G.NumyAddonProfiler = NAP;
 
+local msOptions = {1, 5, 10, 50, 100, 500, 1000};
+
 -- the metrics that can be fake reset, since they're just incremental
 local resettableMetrics = {
     [Enum.AddOnProfilerMetric.CountTimeOver1Ms] = 'CountTimeOver1Ms',
@@ -31,7 +33,7 @@ NAP.resetBaselineMetrics = NAP.initialMetrics;
 NAP.snapshots = {};
 --- @type table<string, { title: string, notes: string, loaded: boolean, loadedBeforeProfiler: boolean }>
 NAP.addons = {};
---- @type string[] # list of addon names
+--- @type table<string, boolean> # list of addon names
 NAP.loadedAddons = {};
 
 --- Note: NAP:Init() is called at the end of the script body, BEFORE the addon_loaded event
@@ -57,7 +59,7 @@ function NAP:Init()
             loadedBeforeProfiler = isLoaded,
         };
         if isLoaded then
-            t_insert(self.loadedAddons, addonName);
+            self.loadedAddons[addonName] = true;
         end
     end
     self.currentMetrics = CopyTable(self.initialMetrics);
@@ -100,7 +102,7 @@ function NAP:ADDON_LOADED(addonName)
     end
     if not self.addons[addonName] then return end
 
-    t_insert(self.loadedAddons, addonName);
+    self.loadedAddons[addonName] = true;
     self.addons[addonName].loadedBeforeProfiler = false;
     self.addons[addonName].loaded = true;
 end
@@ -111,7 +113,7 @@ function NAP:OnUpdate()
     if not self.collectData then return end
     local snapshot;
 
-    for _, addonName in pairs(self.loadedAddons) do
+    for addonName in pairs(self.loadedAddons) do
         local metrics = self:GetMetrics(addonName);
         if metrics then
             if not snapshot then snapshot = {[TIMESTAMP_INDEX] = GetTime(), [DATA_INDEX] = {}} end
@@ -171,23 +173,88 @@ function NAP:InitDataCollector()
     self.purgerTicker = C_Timer.NewTicker(5, function() self:PurgeOldData() end)
 end
 
+function NAP:PrepareFilteredData()
+    -- idc about recycling here, just wipe it
+    t_wipe(self.filteredData)
+    self.dataProvider = nil
+
+    if not self.collectData then return end
+
+    local minTimestamp = GetTime() - self.curHistoryRange;
+
+    for addonName in pairs(self.loadedAddons) do
+        local info = self.addons[addonName];
+        if info.title:lower():match(self.curMatch) then
+            ---@type NAP_ElementData
+            ---@diagnostic disable-next-line: missing-fields
+            local data = {
+                addonName = addonName,
+                addonTitle = info.title,
+                peakTime = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.PeakTime),
+                encounterAvg = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.EncounterAverageTime),
+                recentAvg = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.RecentAverageTime),
+            };
+            if 0 == self.curHistoryRange then
+                for _, ms in ipairs(msOptions) do
+                    local currentMetric = self.currentMetrics[addonName]['CountTimeOver' .. ms .. 'Ms'] or 0;
+                    local baselineMetric = self.resetBaselineMetrics[addonName]['CountTimeOver' .. ms .. 'Ms'] or 0;
+                    local adjustedValue = currentMetric - baselineMetric;
+                    data["over" .. ms .. "Ms"] = adjustedValue;
+                end
+            else
+                for _, snapshot in ipairs(self.snapshots) do
+                    if snapshot[TIMESTAMP_INDEX] > minTimestamp then
+                        local metrics = snapshot[DATA_INDEX][addonName];
+                        if metrics then
+                            for _, ms in ipairs(msOptions) do
+                                local adjustedValue = metrics[Enum.AddOnProfilerMetric['CountTimeOver' .. ms .. 'Ms']] or 0;
+                                data["over" .. ms .. "Ms"] = (data["over" .. ms .. "Ms"] or 0) + adjustedValue;
+                            end
+                        end
+                    end
+                end
+            end
+            data.overMsSum = 0;
+            local previousGroupCount = 0;
+            for _, ms in ipairs_reverse(msOptions) do
+                data["over" .. ms .. "Ms"] = data["over" .. ms .. "Ms"] or 0;
+                local count = data["over" .. ms .. "Ms"];
+                data.overMsSum = data.overMsSum + ((count - previousGroupCount) * ms);
+                previousGroupCount = count;
+            end
+
+            t_insert(self.filteredData, data);
+        end
+    end
+
+    self.dataProvider = CreateDataProvider(self.filteredData)
+end
+
 function NAP:InitUI()
-    local rawData = self.snapshots;
     self.filteredData = {};
-    local filteredData = self.filteredData;
     self.dataProvider = nil;
+    self.curMatch = ".+"
 
     local ORDER_ASC = 1;
     local ORDER_DESC = -1;
 
-    local TIME_FORMAT = "|cfff8f8f2%.3f|r|cff808080ms|r";
-    local ROUND_TIME_FORMAT = "|cfff8f8f2%d|r|cff808080ms|r";
+    local msText = "|cff808080ms|r";
+    local xText = "|cff808080x|r";
+    local greyColorFormat = "|cff808080%s|r";
+    local whiteColorFormat = "|cfff8f8f2%s|r";
+
+    local TIME_FORMAT = function(val) return (val > 0 and whiteColorFormat or greyColorFormat):format(("%.3f"):format(val)) .. msText; end;
+    local ROUND_TIME_FORMAT = function(val) return (val > 0 and whiteColorFormat or greyColorFormat):format(val) .. msText; end;
+    local COUNTER_FORMAT = function(val) return (val > 0 and whiteColorFormat or greyColorFormat):format(val) .. xText; end;
+    local RAW_FORMAT = function(val) return val; end;
+
     local COLUMN_INFO = {
         {
+            justifyLeft = true,
             title = "Addon Name",
             width = 300,
             order = ORDER_ASC,
-            textFormat = "%s",
+            textFormatter = RAW_FORMAT,
             textKey = "addonTitle",
             sortMethods = {
                 ---@param a NAP_ElementData
@@ -206,7 +273,7 @@ function NAP:InitUI()
             title = "Peak Time",
             width = 96,
             order = ORDER_ASC,
-            textFormat = TIME_FORMAT,
+            textFormatter = TIME_FORMAT,
             textKey = "peakTime",
             tooltip = "Biggest spike in ms since logging in. This is not reset by reloading.",
             sortMethods = {
@@ -230,7 +297,7 @@ function NAP:InitUI()
             title = "Boss Avg",
             width = 96,
             order = ORDER_ASC,
-            textFormat = TIME_FORMAT,
+            textFormatter = TIME_FORMAT,
             textKey = "encounterAvg",
             tooltip = "Average time spent per frame during a boss encounter.",
             sortMethods = {
@@ -254,7 +321,7 @@ function NAP:InitUI()
             title = "Recent Avg",
             width = 96,
             order = ORDER_ASC,
-            textFormat = TIME_FORMAT,
+            textFormatter = TIME_FORMAT,
             textKey = "recentAvg",
             tooltip = "Average time spent in the last 60 frames.",
             sortMethods = {
@@ -275,13 +342,12 @@ function NAP:InitUI()
             },
         },
     }
-    local msOptions = {1, 5, 10, 50, 100, 500, 1000};
     for _, ms in ipairs(msOptions) do
         t_insert(COLUMN_INFO, {
             title = "Over " .. ms .. "ms",
-            width = 85,
+            width = 80 + (strlen(ms) * 5),
             order = ORDER_ASC,
-            textFormat = "|cfff8f8f2%d|r|cff808080x|r",
+            textFormatter = COUNTER_FORMAT,
             textKey = "over" .. ms .. "Ms",
             tooltip = "How many times the addon took longer than " .. ms .. "ms per frame.",
             sortMethods = {
@@ -306,7 +372,7 @@ function NAP:InitUI()
         title = "Spike Sum",
         width = 96,
         order = ORDER_ASC,
-        textFormat = ROUND_TIME_FORMAT,
+        textFormatter = ROUND_TIME_FORMAT,
         textKey = "overMsSum",
         tooltip = "Sum of all the separate spikes.",
         sortMethods = {
@@ -331,7 +397,6 @@ function NAP:InitUI()
 
     local UPDATE_INTERVAL = 1
     local continuousUpdate = true
-    local curMatch = ".+"
 
     ---@class NAP_ElementData
     ---@field addonName string
@@ -348,62 +413,6 @@ function NAP:InitUI()
     ---@field over1000Ms number
     ---@field overMsSum number
 
-    local function prepareFilteredData()
-        -- idc about recycling here, just wipe it
-        t_wipe(filteredData)
-        self.dataProvider = nil
-
-        if not self.collectData then return end
-
-        local minTimestamp = GetTime() - self.curHistoryRange;
-
-        for addonName, info in pairs(self.addons) do
-            if info.loaded and info.title:lower():match(curMatch) then
-                ---@type NAP_ElementData
-                ---@diagnostic disable-next-line: missing-fields
-                local data = {
-                    addonName = addonName,
-                    addonTitle = info.title,
-                    peakTime = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.PeakTime),
-                    encounterAvg = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.EncounterAverageTime),
-                    recentAvg = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.RecentAverageTime),
-                };
-                if 0 == self.curHistoryRange then
-                    for _, ms in ipairs(msOptions) do
-                        local currentMetric = self.currentMetrics[addonName]['CountTimeOver' .. ms .. 'Ms'] or 0;
-                        local baselineMetric = self.resetBaselineMetrics[addonName]['CountTimeOver' .. ms .. 'Ms'] or 0;
-                        local adjustedValue = currentMetric - baselineMetric;
-                        data["over" .. ms .. "Ms"] = adjustedValue;
-                    end
-                else
-                    for _, snapshot in ipairs(self.snapshots) do
-                        if snapshot[TIMESTAMP_INDEX] > minTimestamp then
-                            local metrics = snapshot[DATA_INDEX][addonName];
-                            if metrics then
-                                for _, ms in ipairs(msOptions) do
-                                    local adjustedValue = metrics[Enum.AddOnProfilerMetric['CountTimeOver' .. ms .. 'Ms']] or 0;
-                                    data["over" .. ms .. "Ms"] = (data["over" .. ms .. "Ms"] or 0) + adjustedValue;
-                                end
-                            end
-                        end
-                    end
-                end
-                data.overMsSum = 0;
-                local previousGroupCount = 0;
-                for _, ms in ipairs_reverse(msOptions) do
-                    data["over" .. ms .. "Ms"] = data["over" .. ms .. "Ms"] or 0;
-                    local count = data["over" .. ms .. "Ms"];
-                    data.overMsSum = data.overMsSum + ((count - previousGroupCount) * ms);
-                    previousGroupCount = count;
-                end
-
-                t_insert(filteredData, data);
-            end
-        end
-
-        self.dataProvider = CreateDataProvider(filteredData)
-    end
-
     local function sortFilteredData()
         if self.dataProvider then
             self.dataProvider:SetSortComparator(COLUMN_INFO[activeSort].sortMethods[activeOrder])
@@ -419,7 +428,7 @@ function NAP:InitUI()
         function profilerFrameMixin:OnUpdate(elapsed)
             self.elapsed = (self.elapsed or 0) + elapsed
             if self.elapsed >= UPDATE_INTERVAL then
-                prepareFilteredData()
+                NAP:PrepareFilteredData()
                 sortFilteredData()
 
                 local perc = self.ScrollBox:GetScrollPercentage()
@@ -451,9 +460,9 @@ function NAP:InitUI()
         self.ProfilerFrame = Mixin(CreateFrame("Frame", "NumyAddonProfilerFrame", UIParent, "ButtonFrameTemplate"), profilerFrameMixin)
         t_insert(UISpecialFrames, self.ProfilerFrame:GetName())
         local display = self.ProfilerFrame
-        local width = 2;
+        local width = 40;
         for _, info in pairs(COLUMN_INFO) do
-            width = width + info.width
+            width = width + (info.width - 2)
         end
         display:SetSize(width, 651)
         display:SetPoint("CENTER", 0, 0)
@@ -510,7 +519,7 @@ function NAP:InitUI()
         search:SetMaxBytes(64)
         search:HookScript("OnTextChanged", function(self)
             local text = s_trim(self:GetText()):lower()
-            curMatch = text == "" and ".+" or text
+            self.curMatch = text == "" and ".+" or text
 
             display.elapsed = 50
         end)
@@ -587,8 +596,8 @@ function NAP:InitUI()
                 if notes and notes ~= "" then
                     GameTooltip:AddLine(notes, 1, 1, 1, true)
                 end
-                GameTooltip:AddDoubleLine("Peak Time (since game start):", TIME_FORMAT:format(data.peakTime), 1, 0.92, 0, 1, 1, 1)
-                GameTooltip:AddDoubleLine("Encounter Avg:", TIME_FORMAT:format(data.encounterAvg), 1, 0.92, 0, 1, 1, 1)
+                GameTooltip:AddDoubleLine("Peak Time (since game start):", TIME_FORMAT(data.peakTime), 1, 0.92, 0, 1, 1, 1)
+                GameTooltip:AddDoubleLine("Encounter Avg:", TIME_FORMAT(data.encounterAvg), 1, 0.92, 0, 1, 1, 1)
                 GameTooltip:Show()
             end
         end
@@ -608,27 +617,32 @@ function NAP:InitUI()
 
         local view = CreateScrollBoxListLinearView(2, 0, 2, 2, 2)
         view:SetElementExtent(20)
+        local buttonWidth = scrollBox:GetWidth() - 4
         view:SetElementInitializer("Button", function(button, data)
             if not button.created then
                 Mixin(button, buttonMixin)
-                button:SetSize(1000, 20)
+                button:SetSize(buttonWidth, 20)
                 button:SetHighlightTexture("Interface\\BUTTONS\\WHITE8X8")
                 button:GetHighlightTexture():SetVertexColor(0.1, 0.1, 0.1, 0.5)
                 button:SetScript("OnEnter", button.OnEnter)
                 button:SetScript("OnLeave", button.OnLeave)
 
-                local offSet = 0
-                local padding = 2
+                local offSet = 2
+                local padding = 4
                 button.columns = {}
 
                 for i, column in ipairs(COLUMN_INFO) do
                     local text = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-                    text:SetPoint("LEFT", offSet, 0)
-                    text:SetSize(column.width - padding, 0)
-                    text:SetJustifyH("LEFT")
+                    if column.justifyLeft then
+                        text:SetPoint("LEFT", offSet, 0)
+                    else
+                        text:SetPoint("RIGHT", (offSet + column.width - (padding * 2)) - buttonWidth, 0)
+                    end
+                    text:SetSize(column.width - (padding * 2.5), 0)
+                    text:SetJustifyH(column.justifyLeft and "LEFT" or "RIGHT")
                     text:SetWordWrap(false)
                     button.columns[i] = text
-                    offSet = offSet + column.width
+                    offSet = offSet + (column.width - (padding / 2))
                 end
 
                 local bg = button:CreateTexture(nil, "BACKGROUND")
@@ -640,7 +654,7 @@ function NAP:InitUI()
             end
 
             for i, column in ipairs(COLUMN_INFO) do
-                button.columns[i]:SetText(column.textFormat:format(data[column.textKey]))
+                button.columns[i]:SetText(column.textFormatter(data[column.textKey]))
             end
         end)
 
@@ -770,7 +784,7 @@ function NAP:InitUI()
         end)
 
         updateButton:SetScript("OnClick", function()
-            prepareFilteredData()
+            NAP:PrepareFilteredData()
             sortFilteredData()
 
             local perc = display.ScrollBox:GetScrollPercentage()
@@ -804,8 +818,6 @@ function NAP:InitUI()
             self.Icon:SetPoint("CENTER", -1, -1)
         end)
 
-        local STATS_FORMAT = "|cfff8f8f2%s |cff75715e-|r %d |cff75715e/ %d|r"
-
         local stats = display:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         stats:SetPoint("LEFT", updateButton, "RIGHT", 6, 0)
         stats:SetSize(300, 20)
@@ -813,8 +825,9 @@ function NAP:InitUI()
         stats:SetWordWrap(false)
         display.Stats = stats
 
+        local STATS_FORMAT = "|cfff8f8f2%s|r"
         function stats:Update()
-            self:SetFormattedText(STATS_FORMAT, continuousUpdate and "Updating" or "Paused", #filteredData, #rawData)
+            self:SetFormattedText(STATS_FORMAT, continuousUpdate and "Live Updating List" or "Paused")
         end
 
         self.ToggleButton = CreateFrame("Button", "$parentToggle", display, "UIPanelButtonTemplate, UIButtonTemplate")

@@ -1,9 +1,9 @@
 local thisAddonName = ...
 
-local s_trim = _G.string.trim
-local t_insert = _G.table.insert
-local t_removemulti = _G.table.removemulti
-local t_wipe = _G.table.wipe
+local s_trim = string.trim
+local t_insert = table.insert
+local t_removemulti = table.removemulti
+local t_wipe = table.wipe
 
 local NAP = {};
 NAP.eventFrame = CreateFrame('Frame');
@@ -14,14 +14,28 @@ local msOptions = {1, 5, 10, 50, 100, 500, 1000};
 
 -- the metrics that can be fake reset, since they're just incremental
 local resettableMetrics = {
-    [Enum.AddOnProfilerMetric.CountTimeOver1Ms] = 'CountTimeOver1Ms',
-    [Enum.AddOnProfilerMetric.CountTimeOver5Ms] = 'CountTimeOver5Ms',
-    [Enum.AddOnProfilerMetric.CountTimeOver10Ms] = 'CountTimeOver10Ms',
-    [Enum.AddOnProfilerMetric.CountTimeOver50Ms] = 'CountTimeOver50Ms',
-    [Enum.AddOnProfilerMetric.CountTimeOver100Ms] = 'CountTimeOver100Ms',
-    [Enum.AddOnProfilerMetric.CountTimeOver500Ms] = 'CountTimeOver500Ms',
-    [Enum.AddOnProfilerMetric.CountTimeOver1000Ms] = 'CountTimeOver1000Ms',
+    [Enum.AddOnProfilerMetric.CountTimeOver1Ms] = 1,
+    [Enum.AddOnProfilerMetric.CountTimeOver5Ms] = 5,
+    [Enum.AddOnProfilerMetric.CountTimeOver10Ms] = 10,
+    [Enum.AddOnProfilerMetric.CountTimeOver50Ms] = 50,
+    [Enum.AddOnProfilerMetric.CountTimeOver100Ms] = 100,
+    [Enum.AddOnProfilerMetric.CountTimeOver500Ms] = 500,
+    [Enum.AddOnProfilerMetric.CountTimeOver1000Ms] = 1000,
 };
+local msMetricMap = {
+    [1] = Enum.AddOnProfilerMetric.CountTimeOver1Ms,
+    [5] = Enum.AddOnProfilerMetric.CountTimeOver5Ms,
+    [10] = Enum.AddOnProfilerMetric.CountTimeOver10Ms,
+    [50] = Enum.AddOnProfilerMetric.CountTimeOver50Ms,
+    [100] = Enum.AddOnProfilerMetric.CountTimeOver100Ms,
+    [500] = Enum.AddOnProfilerMetric.CountTimeOver500Ms,
+    [1000] = Enum.AddOnProfilerMetric.CountTimeOver1000Ms,
+};
+local msOptionFieldMap = {};
+for ms in pairs(msMetricMap) do
+    msOptionFieldMap[ms] = "over" .. ms .. "Ms";
+end
+
 local HISTORY_RANGES = {0, 5, 15, 30, 60, 120, 300, 600} -- 5sec - 10min
 NAP.curHistoryRange = 30;
 
@@ -30,8 +44,30 @@ NAP.initialMetrics = {};
 --- @type table<string, table<string, number>> [addonName] = { [metricName] = value }
 NAP.resetBaselineMetrics = NAP.initialMetrics;
 
-NAP.snapshots = {};
---- @type table<string, { title: string, notes: string, loaded: boolean, loadedBeforeProfiler: boolean }>
+NAP.totalMs = {};
+NAP.totalTicks = {};
+NAP.peakMs = {};
+NAP.snapshots = {
+    --- @type NAP_Bucket[]
+    buckets = {},
+};
+do
+    --- @class NAP_Bucket
+    local lastBucket = {
+        --- @type table<number, number> # tickIndex -> timestamp
+        tickMap = {},
+        --- @type table<string, table<number, number>> # addonName -> tickIndex -> ms
+        lastTick = {},
+        curTickIndex = 0;
+    };
+    NAP.snapshots.buckets[1] = lastBucket;
+    NAP.snapshots.lastBucket = lastBucket;
+    for ms in pairs(msMetricMap) do
+        lastBucket[ms] = {}
+    end
+end
+
+--- @type table<string, { title: string, notes: string, loaded: boolean }>
 NAP.addons = {};
 --- @type table<string, boolean> # list of addon names
 NAP.loadedAddons = {};
@@ -41,8 +77,8 @@ function NAP:Init()
     for i = 1, C_AddOns.GetNumAddOns() do
         local addonName, title, notes = C_AddOns.GetAddOnInfo(i);
         self.initialMetrics[addonName] = {};
-        for metric, metricName in pairs(resettableMetrics) do
-            self.initialMetrics[addonName][metricName] = C_AddOnProfiler.GetAddOnMetric(addonName, metric);
+        for metric, ms in pairs(resettableMetrics) do
+            self.initialMetrics[addonName][ms] = C_AddOnProfiler.GetAddOnMetric(addonName, metric);
         end
         local isLoaded = C_AddOns.IsAddOnLoaded(addonName);
         if title == '' then
@@ -55,22 +91,20 @@ function NAP:Init()
         self.addons[addonName] = {
             title = title,
             notes = notes,
-            loaded = isLoaded,
-            loadedBeforeProfiler = isLoaded,
         };
-        if isLoaded then
-            self.loadedAddons[addonName] = true;
+        if isLoaded and addonName ~= thisAddonName then
+            self:ADDON_LOADED(addonName);
         end
     end
     self.currentMetrics = CopyTable(self.initialMetrics);
 
-    self.eventFrame:SetScript('OnUpdate', function() self:OnUpdate() end);
+    self.eventFrame:SetScript('OnUpdate', function(_, ...) self:OnUpdate(...) end);
     self.eventFrame:SetScript('OnEvent', function(_, event, ...)
         if self[event] then self[event](self, ...); end
     end);
     self.eventFrame:RegisterEvent('ADDON_LOADED');
 
-    self:InitDataCollector();
+    self:StartPurgeTicker();
     SLASH_NUMY_ADDON_PROFILER1 = '/nap';
     SLASH_NUMY_ADDON_PROFILER2 = '/addonprofile';
     SLASH_NUMY_ADDON_PROFILER3 = '/addonprofiler';
@@ -88,10 +122,16 @@ function NAP:Init()
         end
         self:ToggleFrame();
     end;
+    RunNextFrame(function()
+        if NumyProfiler then -- the irony of profiling the profiler (-:
+            self.OnUpdate = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'OnUpdate', self.OnUpdate);
+            self.PurgeOldData = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PurgeOldData', self.PurgeOldData);
+        end
+    end);
 end
 
 function NAP:ADDON_LOADED(addonName)
-    if addonName == thisAddonName then
+    if thisAddonName == addonName then
         AddonProfilerDB = AddonProfilerDB or {};
         self.db = AddonProfilerDB;
         self:InitUI();
@@ -103,75 +143,139 @@ function NAP:ADDON_LOADED(addonName)
     if not self.addons[addonName] then return end
 
     self.loadedAddons[addonName] = true;
-    self.addons[addonName].loadedBeforeProfiler = false;
     self.addons[addonName].loaded = true;
+    self.totalMs[addonName] = 0;
+    self.totalTicks[addonName] = 0;
+    self.peakMs[addonName] = 0;
+    self.snapshots.lastBucket.lastTick[addonName] = {};
+    for ms in pairs(msMetricMap) do
+        self.snapshots.lastBucket[ms][addonName] = {};
+    end
 end
 
-local TIMESTAMP_INDEX = 1
-local DATA_INDEX = 2
+function NAP:InitNewBucket()
+    local lastBucket = { curTickIndex = 0, tickMap = {}, lastTick = {} };
+    for ms in pairs(msMetricMap) do
+        lastBucket[ms] = {};
+    end
+    for addonName in pairs(self.loadedAddons) do
+        lastBucket.lastTick[addonName] = {};
+        for ms in pairs(msMetricMap) do
+            lastBucket[ms][addonName] = {};
+        end
+    end
+
+    t_insert(self.snapshots.buckets, lastBucket);
+    self.snapshots.lastBucket = lastBucket;
+
+    return lastBucket;
+end
+
 function NAP:OnUpdate()
     if not self.collectData then return end
-    local snapshot;
 
+    local peakMs = self.peakMs;
+    local totalMs = self.totalMs;
+    local totalTicks = self.totalTicks;
+    local currentMetrics = self.currentMetrics;
+
+    local lastBucket = self.snapshots.lastBucket;
+
+    local curTickIndex = lastBucket.curTickIndex + 1;
+    lastBucket.curTickIndex = curTickIndex;
+    local tickTime = GetTime();
+    lastBucket.tickMap[curTickIndex] = tickTime;
+
+    local getMetric = C_AddOnProfiler.GetAddOnMetric;
     for addonName in pairs(self.loadedAddons) do
-        local metrics = self:GetMetrics(addonName);
-        if metrics then
-            if not snapshot then snapshot = {[TIMESTAMP_INDEX] = GetTime(), [DATA_INDEX] = {}} end
-            snapshot[DATA_INDEX][addonName] = metrics;
+        totalTicks[addonName] = totalTicks[addonName] + 1;
+        local lastTickMs = getMetric(addonName, Enum.AddOnProfilerMetric.LastTime);
+        if lastTickMs > 0 then
+            lastBucket.lastTick[addonName][curTickIndex] = lastTickMs;
+            totalMs[addonName] = totalMs[addonName] + lastTickMs;
+            if lastTickMs > peakMs[addonName] then
+                peakMs[addonName] = lastTickMs;
+            end
+            for _, ms in ipairs(msOptions) do
+                local count = getMetric(addonName, msMetricMap[ms]);
+                local currentMetric = currentMetrics[addonName][ms];
+                local increment = count - currentMetric;
+                if increment > 0 then
+                    lastBucket[ms][addonName][curTickIndex] = increment;
+                else
+                    -- larger ms counts can't increment when smaller ones didn't
+                    break;
+                end
+                currentMetrics[addonName][ms] = count;
+            end
         end
     end
-    if snapshot then
-        table.insert(self.snapshots, snapshot);
-    end
-end
-
-function NAP:GetMetrics(addonName)
-    local metrics;
-    for metric, metricName in pairs(resettableMetrics) do
-        local value = C_AddOnProfiler.GetAddOnMetric(addonName, metric);
-        local currentMetric = self.currentMetrics[addonName][metricName] or 0;
-        local adjustedValue = value - currentMetric;
-
-        if adjustedValue > 0 then
-            if not metrics then metrics = {} end
-            metrics[metric] = adjustedValue;
-        end
-        self.currentMetrics[addonName][metricName] = value;
-    end
-
-    return metrics;
 end
 
 function NAP:ResetMetrics()
     self.resetBaselineMetrics = CopyTable(self.currentMetrics);
+    for addonName in pairs(self.loadedAddons) do
+        self.totalMs[addonName] = 0;
+        self.peakMs[addonName] = 0;
+        self.totalTicks[addonName] = 0;
+        self.snapshots.buckets = {};
+        self:InitNewBucket();
+    end
 end
 
+local BUCKET_CUTOFF = 3000; -- rather arbitrary number
 function NAP:PurgeOldData()
+    if self.snapshots.lastBucket.curTickIndex > BUCKET_CUTOFF then
+        self:InitNewBucket();
+    end
+
     local timestamp = GetTime();
-    local rawData = self.snapshots;
     local cutoff = timestamp - HISTORY_RANGES[#HISTORY_RANGES];
 
+    local firstBucket = self.snapshots.buckets[1];
+    if not self.snapshots.buckets[2] or not firstBucket.tickMap[1] or firstBucket.tickMap[1] > cutoff then
+        return;
+    end
+
     local to;
-
-    for i = 1, #rawData do
-        if rawData[i][TIMESTAMP_INDEX] > cutoff and i > 1 then
+    for i, bucket in ipairs(self.snapshots.buckets) do
+        if bucket.tickMap[1] and bucket.tickMap[1] > cutoff then
             to = i - 1;
-
             break;
         end
     end
 
-    if to then
-        -- don't ever use standard table.remove
-        t_removemulti(rawData, 1, to);
+    if to and to > 1 then
+        t_removemulti(self.snapshots.buckets, 1, to);
     end
 end
 
-function NAP:InitDataCollector()
+function NAP:StartPurgeTicker()
+    if self.purgerTicker then
+        self.purgerTicker:Cancel()
+    end
+
     self.collectData = true;
     -- continiously purge older entires
     self.purgerTicker = C_Timer.NewTicker(5, function() self:PurgeOldData() end)
 end
+
+---@class NAP_ElementData
+---@field addonName string
+---@field addonTitle string
+---@field peakTime number
+---@field encounterAvg number
+---@field averageMs number
+---@field totalMs number
+---@field numberOfTicks number
+---@field over1Ms number
+---@field over5Ms number
+---@field over10Ms number
+---@field over50Ms number
+---@field over100Ms number
+---@field over500Ms number
+---@field over1000Ms number
+---@field overMsSum number
 
 function NAP:PrepareFilteredData()
     -- idc about recycling here, just wipe it
@@ -182,6 +286,20 @@ function NAP:PrepareFilteredData()
 
     local minTimestamp = GetTime() - self.curHistoryRange;
 
+    local withinHistory = {};
+    if 0 ~= self.curHistoryRange then
+        for _, bucket in ipairs(self.snapshots.buckets) do
+            if bucket.tickMap[bucket.curTickIndex] > minTimestamp then
+                for tickIndex, timestamp in pairs(bucket.tickMap) do
+                    if timestamp > minTimestamp then
+                        withinHistory[bucket] = tickIndex;
+                        break;
+                    end
+                end
+            end
+        end
+    end
+
     for addonName in pairs(self.loadedAddons) do
         local info = self.addons[addonName];
         if info.title:lower():match(self.curMatch) then
@@ -190,35 +308,52 @@ function NAP:PrepareFilteredData()
             local data = {
                 addonName = addonName,
                 addonTitle = info.title,
-                peakTime = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.PeakTime),
+                peakTime = 0,
                 encounterAvg = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.EncounterAverageTime),
-                recentAvg = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.RecentAverageTime),
+                averageMs = 0,
+                totalMs = 0,
+                numberOfTicks = 0,
             };
+            for _, ms in ipairs(msOptions) do
+                data[msOptionFieldMap[ms]] = 0;
+            end
             if 0 == self.curHistoryRange then
-                for _, ms in ipairs(msOptions) do
-                    local currentMetric = self.currentMetrics[addonName]['CountTimeOver' .. ms .. 'Ms'] or 0;
-                    local baselineMetric = self.resetBaselineMetrics[addonName]['CountTimeOver' .. ms .. 'Ms'] or 0;
+                for ms in pairs(msMetricMap) do
+                    local currentMetric = self.currentMetrics[addonName][ms] or 0;
+                    local baselineMetric = self.resetBaselineMetrics[addonName][ms] or 0;
                     local adjustedValue = currentMetric - baselineMetric;
-                    data["over" .. ms .. "Ms"] = adjustedValue;
+                    data[msOptionFieldMap[ms]] = adjustedValue;
                 end
+                data.peakTime = self.peakMs[addonName];
+                data.totalMs = self.totalMs[addonName];
+                data.numberOfTicks = self.totalTicks[addonName];
             else
-                for _, snapshot in ipairs(self.snapshots) do
-                    if snapshot[TIMESTAMP_INDEX] > minTimestamp then
-                        local metrics = snapshot[DATA_INDEX][addonName];
-                        if metrics then
+                for bucket, startingTickIndex in pairs(withinHistory) do
+                    data.numberOfTicks = data.numberOfTicks + ((bucket.curTickIndex - startingTickIndex) + 1);
+                    for tickIndex = startingTickIndex, bucket.curTickIndex do
+                        local tickMs = bucket.lastTick[addonName][tickIndex];
+                        if tickMs and tickMs > 0 then
+                            data.peakTime = max(data.peakTime, tickMs);
+                            data.totalMs = data.totalMs + tickMs;
                             for _, ms in ipairs(msOptions) do
-                                local adjustedValue = metrics[Enum.AddOnProfilerMetric['CountTimeOver' .. ms .. 'Ms']] or 0;
-                                data["over" .. ms .. "Ms"] = (data["over" .. ms .. "Ms"] or 0) + adjustedValue;
+                                local count = bucket[ms][addonName][tickIndex];
+                                if count and  count > 0 then
+                                    data[msOptionFieldMap[ms]] = data[msOptionFieldMap[ms]] + count;
+                                else
+                                    break;
+                                end
                             end
                         end
                     end
                 end
             end
+            data.averageMs = data.totalMs / data.numberOfTicks;
+
             data.overMsSum = 0;
             local previousGroupCount = 0;
             for _, ms in ipairs_reverse(msOptions) do
-                data["over" .. ms .. "Ms"] = data["over" .. ms .. "Ms"] or 0;
-                local count = data["over" .. ms .. "Ms"];
+                data[msOptionFieldMap[ms]] = data[msOptionFieldMap[ms]] or 0;
+                local count = data[msOptionFieldMap[ms]];
                 data.overMsSum = data.overMsSum + ((count - previousGroupCount) * ms);
                 previousGroupCount = count;
             end
@@ -248,6 +383,24 @@ function NAP:InitUI()
     local COUNTER_FORMAT = function(val) return (val > 0 and whiteColorFormat or greyColorFormat):format(val) .. xText; end;
     local RAW_FORMAT = function(val) return val; end;
 
+    local function makeSortMethods(key)
+        return {
+            ---@param a NAP_ElementData
+            ---@param b NAP_ElementData
+            [ORDER_ASC] = function(a, b)
+                return a[key] < b[key]
+                    or a[key] == b[key]
+                    and a.addonName < b.addonName;
+            end,
+            ---@param a NAP_ElementData
+            ---@param b NAP_ElementData
+            [ORDER_DESC] = function(a, b)
+                return a[key] > b[key]
+                    or a[key] == b[key]
+                    and a.addonName < b.addonName;
+            end,
+        };
+    end
     local COLUMN_INFO = {
         {
             justifyLeft = true,
@@ -270,102 +423,51 @@ function NAP:InitUI()
             }
         },
         {
-            title = "Peak Time",
-            width = 96,
-            order = ORDER_ASC,
-            textFormatter = TIME_FORMAT,
-            textKey = "peakTime",
-            tooltip = "Biggest spike in ms since logging in. This is not reset by reloading.",
-            sortMethods = {
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
-                [ORDER_ASC] = function(a, b)
-                    return a.peakTime < b.peakTime
-                        or a.peakTime == b.peakTime
-                        and a.addonName < b.addonName;
-                end,
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
-                [ORDER_DESC] = function(a, b)
-                    return a.peakTime > b.peakTime
-                        or a.peakTime == b.peakTime
-                        and a.addonName < b.addonName;
-                end,
-            },
-        },
-        {
             title = "Boss Avg",
             width = 96,
             order = ORDER_ASC,
             textFormatter = TIME_FORMAT,
             textKey = "encounterAvg",
-            tooltip = "Average time spent per frame during a boss encounter.",
-            sortMethods = {
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
-                [ORDER_ASC] = function(a, b)
-                    return a.encounterAvg < b.encounterAvg
-                        or a.encounterAvg == b.encounterAvg
-                        and a.addonName < b.addonName;
-                end,
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
-                [ORDER_DESC] = function(a, b)
-                    return a.encounterAvg > b.encounterAvg
-                        or a.encounterAvg == b.encounterAvg
-                        and a.addonName < b.addonName;
-                end,
-            },
+            tooltip = "Average time spent per frame during a boss encounter. Ignores the History Range",
+            sortMethods = makeSortMethods("encounterAvg"),
         },
         {
-            title = "Recent Avg",
+            title = "Peak Time",
             width = 96,
             order = ORDER_ASC,
             textFormatter = TIME_FORMAT,
-            textKey = "recentAvg",
-            tooltip = "Average time spent in the last 60 frames.",
-            sortMethods = {
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
-                [ORDER_ASC] = function(a, b)
-                    return a.recentAvg < b.recentAvg
-                        or a.recentAvg == b.recentAvg
-                        and a.addonName < b.addonName;
-                end,
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
-                [ORDER_DESC] = function(a, b)
-                    return a.recentAvg > b.recentAvg
-                        or a.recentAvg == b.recentAvg
-                        and a.addonName < b.addonName;
-                end,
-            },
+            textKey = "peakTime",
+            tooltip = "Biggest spike in ms, within the History Range.",
+            sortMethods = makeSortMethods("peakTime"),
         },
-    }
+        {
+            title = "Average",
+            width = 96,
+            order = ORDER_ASC,
+            textFormatter = TIME_FORMAT,
+            textKey = "averageMs",
+            tooltip = "Average time spent per frame.",
+            sortMethods = makeSortMethods("averageMs"),
+        },
+        {
+            title = "Total",
+            width = 108,
+            order = ORDER_ASC,
+            textFormatter = TIME_FORMAT,
+            textKey = "totalMs",
+            tooltip = "Total CPU time spent, within the History Range.",
+            sortMethods = makeSortMethods("totalMs"),
+        },
+    };
     for _, ms in ipairs(msOptions) do
         t_insert(COLUMN_INFO, {
             title = "Over " .. ms .. "ms",
             width = 80 + (strlen(ms) * 5),
             order = ORDER_ASC,
             textFormatter = COUNTER_FORMAT,
-            textKey = "over" .. ms .. "Ms",
+            textKey = msOptionFieldMap[ms],
             tooltip = "How many times the addon took longer than " .. ms .. "ms per frame.",
-            sortMethods = {
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
-                [ORDER_ASC] = function(a, b)
-                    return a["over" .. ms .. "Ms"] < b["over" .. ms .. "Ms"]
-                        or a["over" .. ms .. "Ms"] == b["over" .. ms .. "Ms"]
-                        and a.addonName < b.addonName;
-                end,
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
-                [ORDER_DESC] = function(a, b)
-                    return a["over" .. ms .. "Ms"] > b["over" .. ms .. "Ms"]
-                        or a["over" .. ms .. "Ms"] == b["over" .. ms .. "Ms"]
-                        and a.addonName < b.addonName;
-                end,
-            },
+            sortMethods = makeSortMethods(msOptionFieldMap[ms]),
         });
     end
     t_insert(COLUMN_INFO, {
@@ -375,43 +477,13 @@ function NAP:InitUI()
         textFormatter = ROUND_TIME_FORMAT,
         textKey = "overMsSum",
         tooltip = "Sum of all the separate spikes.",
-        sortMethods = {
-            ---@param a NAP_ElementData
-            ---@param b NAP_ElementData
-            [ORDER_ASC] = function(a, b)
-                return a.overMsSum < b.overMsSum
-                    or a.overMsSum == b.overMsSum
-                    and a.addonName < b.addonName;
-            end,
-            ---@param a NAP_ElementData
-            ---@param b NAP_ElementData
-            [ORDER_DESC] = function(a, b)
-                return a.overMsSum > b.overMsSum
-                    or a.overMsSum == b.overMsSum
-                    and a.addonName < b.addonName;
-            end,
-        },
+        sortMethods = makeSortMethods("overMsSum"),
     });
 
-    local activeSort, activeOrder = #COLUMN_INFO, ORDER_DESC
+    local activeSort, activeOrder = 4, ORDER_DESC -- 4 = averageMs
 
     local UPDATE_INTERVAL = 1
     local continuousUpdate = true
-
-    ---@class NAP_ElementData
-    ---@field addonName string
-    ---@field addonTitle string
-    ---@field peakTime number
-    ---@field encounterAvg number
-    ---@field recentAvg number
-    ---@field over1Ms number
-    ---@field over5Ms number
-    ---@field over10Ms number
-    ---@field over50Ms number
-    ---@field over100Ms number
-    ---@field over500Ms number
-    ---@field over1000Ms number
-    ---@field overMsSum number
 
     local function sortFilteredData()
         if self.dataProvider then
@@ -505,7 +577,7 @@ function NAP:InitUI()
         local function onSelection(data)
             self.curHistoryRange = data;
 
-            display.elapsed = 50
+            display.elapsed = UPDATE_INTERVAL
         end
         MenuUtil.CreateRadioMenu(historyMenu, isSelected, onSelection, unpack(historyOptions));
         display.HistoryDropdown = historyMenu
@@ -519,7 +591,7 @@ function NAP:InitUI()
         search:SetMaxBytes(64)
         search:HookScript("OnTextChanged", function(self)
             local text = s_trim(self:GetText()):lower()
-            self.curMatch = text == "" and ".+" or text
+            NAP.curMatch = text == "" and ".+" or text
 
             display.elapsed = 50
         end)
@@ -851,6 +923,8 @@ function NAP:InitUI()
 
         resetButton:SetOnClickHandler(function()
             self:ResetMetrics()
+
+            display.elapsed = UPDATE_INTERVAL
         end)
     end
 end
@@ -863,13 +937,7 @@ function NAP:EnableLogging()
     self.ToggleButton:SetText("Disable")
     DynamicResizeButton_Resize(self.ToggleButton)
 
-    self.collectData = true
-
-    if self.purgerTicker then
-        self.purgerTicker:Cancel()
-    end
-
-    self.purgerTicker = C_Timer.NewTicker(5, function() self:PurgeOldData() end)
+    self:StartPurgeTicker()
 
     self.ProfilerFrame.ScrollBox:Flush()
 end

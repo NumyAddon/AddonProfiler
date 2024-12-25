@@ -289,7 +289,7 @@ function NAP:PrepareFilteredData()
     local withinHistory = {};
     if 0 ~= self.curHistoryRange then
         for _, bucket in ipairs(self.snapshots.buckets) do
-            if bucket.tickMap[bucket.curTickIndex] > minTimestamp then
+            if bucket.tickMap and bucket.tickMap[bucket.curTickIndex] and bucket.tickMap[bucket.curTickIndex] > minTimestamp then
                 for tickIndex, timestamp in pairs(bucket.tickMap) do
                     if timestamp > minTimestamp then
                         withinHistory[bucket] = tickIndex;

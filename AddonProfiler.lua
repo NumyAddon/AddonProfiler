@@ -4,6 +4,12 @@ local s_trim = string.trim
 local t_insert = table.insert
 local t_removemulti = table.removemulti
 local t_wipe = table.wipe
+local pairs = pairs
+local GetTime = GetTime
+
+local C_AddOnProfiler_GetAddOnMetric = C_AddOnProfiler.GetAddOnMetric;
+local Enum_AddOnProfilerMetric_LastTime = Enum.AddOnProfilerMetric.LastTime;
+local Enum_AddOnProfilerMetric_EncounterAverageTime = Enum.AddOnProfilerMetric.EncounterAverageTime;
 
 local NAP = {};
 NAP.eventFrame = CreateFrame('Frame');
@@ -79,7 +85,7 @@ function NAP:Init()
         local addonName, title, notes = C_AddOns.GetAddOnInfo(i);
         self.initialMetrics[addonName] = {};
         for metric, ms in pairs(resettableMetrics) do
-            self.initialMetrics[addonName][ms] = C_AddOnProfiler.GetAddOnMetric(addonName, metric);
+            self.initialMetrics[addonName][ms] = C_AddOnProfiler_GetAddOnMetric(addonName, metric);
         end
         local isLoaded = C_AddOns.IsAddOnLoaded(addonName);
         if title == '' then
@@ -97,9 +103,8 @@ function NAP:Init()
             self:ADDON_LOADED(addonName);
         end
     end
-    self.currentMetrics = CopyTable(self.initialMetrics);
 
-    self.eventFrame:SetScript('OnUpdate', function(_, ...) self:OnUpdate(...) end);
+    self.eventFrame:SetScript('OnUpdate', function() self:OnUpdate() end);
     self.eventFrame:SetScript('OnEvent', function(_, event, ...)
         if self[event] then self[event](self, ...); end
     end);
@@ -173,48 +178,50 @@ function NAP:InitNewBucket()
 end
 
 function NAP:OnUpdate()
-    if not self.collectData then return end
-
     self.tickNumber = self.tickNumber + 1;
-
-    local peakMs = self.peakMs;
-    local totalMs = self.totalMs;
-    local currentMetrics = self.currentMetrics;
 
     local lastBucket = self.snapshots.lastBucket;
 
     local curTickIndex = lastBucket.curTickIndex + 1;
     lastBucket.curTickIndex = curTickIndex;
-    local tickTime = GetTime();
-    lastBucket.tickMap[curTickIndex] = tickTime;
+    lastBucket.tickMap[curTickIndex] = GetTime();
 
-    local getMetric = C_AddOnProfiler.GetAddOnMetric;
+    local lastTick = lastBucket.lastTick;
+    local totalMs = self.totalMs;
+    local peakMs = self.peakMs;
+
     for addonName in pairs(self.loadedAddons) do
-        local lastTickMs = getMetric(addonName, Enum.AddOnProfilerMetric.LastTime);
+        local lastTickMs = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_LastTime);
         if lastTickMs > 0 then
-            lastBucket.lastTick[addonName][curTickIndex] = lastTickMs;
+            lastTick[addonName][curTickIndex] = lastTickMs;
             totalMs[addonName] = totalMs[addonName] + lastTickMs;
             if lastTickMs > peakMs[addonName] then
                 peakMs[addonName] = lastTickMs;
-            end
-            for _, ms in ipairs(msOptions) do
-                local count = getMetric(addonName, msMetricMap[ms]);
-                local currentMetric = currentMetrics[addonName][ms];
-                local increment = count - currentMetric;
-                if increment > 0 then
-                    lastBucket[ms][addonName][curTickIndex] = increment;
-                else
-                    -- larger ms counts can't increment when smaller ones didn't
-                    break;
-                end
-                currentMetrics[addonName][ms] = count;
             end
         end
     end
 end
 
+function NAP:GetCurrentMsSpikeMetrics(onlyForAddonName)
+    local currentMetrics = {};
+    if not onlyForAddonName then
+        for addonName in pairs(self.loadedAddons) do
+            currentMetrics[addonName] = {};
+            for metric, ms in pairs(resettableMetrics) do
+                currentMetrics[addonName][ms] = C_AddOnProfiler_GetAddOnMetric(addonName, metric);
+            end
+        end
+    else
+        for metric, ms in pairs(resettableMetrics) do
+            currentMetrics[ms] = C_AddOnProfiler_GetAddOnMetric(onlyForAddonName, metric);
+        end
+    end
+
+    return currentMetrics;
+end
+
 function NAP:ResetMetrics()
-    self.resetBaselineMetrics = CopyTable(self.currentMetrics);
+    self.resetBaselineMetrics = self:GetCurrentMsSpikeMetrics();
     self.tickNumber = 0;
     self.snapshots.buckets = {};
     self:InitNewBucket();
@@ -225,22 +232,27 @@ function NAP:ResetMetrics()
     end
 end
 
-local BUCKET_CUTOFF = 3000; -- rather arbitrary number
+local BUCKET_CUTOFF = 2000; -- rather arbitrary number, but interestingly, the lower your fps, the less often actual work will be performed to purge old data ^^
 function NAP:PurgeOldData()
     if self.snapshots.lastBucket.curTickIndex > BUCKET_CUTOFF then
         self:InitNewBucket();
     end
 
+    local buckets = self.snapshots.buckets
+    local firstBucket = buckets[1];
+    if not buckets[2] or not firstBucket.tickMap[1] then
+        return;
+    end
+
     local timestamp = GetTime();
     local cutoff = timestamp - HISTORY_RANGES[#HISTORY_RANGES];
 
-    local firstBucket = self.snapshots.buckets[1];
-    if not self.snapshots.buckets[2] or not firstBucket.tickMap[1] or firstBucket.tickMap[1] > cutoff then
+    if firstBucket.tickMap[1] > cutoff then
         return;
     end
 
     local to;
-    for i, bucket in ipairs(self.snapshots.buckets) do
+    for i, bucket in ipairs(buckets) do
         if bucket.tickMap[1] and bucket.tickMap[1] > cutoff then
             to = i - 1;
             break;
@@ -248,7 +260,7 @@ function NAP:PurgeOldData()
     end
 
     if to and to > 1 then
-        t_removemulti(self.snapshots.buckets, 1, to);
+        t_removemulti(buckets, 1, to);
     end
 end
 
@@ -311,17 +323,18 @@ function NAP:PrepareFilteredData()
                 addonName = addonName,
                 addonTitle = info.title,
                 peakTime = 0,
-                encounterAvg = C_AddOnProfiler.GetAddOnMetric(addonName, Enum.AddOnProfilerMetric.EncounterAverageTime),
+                encounterAvg = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_EncounterAverageTime),
                 averageMs = 0,
                 totalMs = 0,
                 numberOfTicks = 0,
             };
-            for _, ms in ipairs(msOptions) do
+            for _, ms in pairs(msOptions) do
                 data[msOptionFieldMap[ms]] = 0;
             end
             if 0 == self.curHistoryRange then
+                local currentMetrics = self:GetCurrentMsSpikeMetrics(addonName);
                 for ms in pairs(msMetricMap) do
-                    local currentMetric = self.currentMetrics[addonName][ms] or 0;
+                    local currentMetric = currentMetrics[ms] or 0;
                     local baselineMetric = self.resetBaselineMetrics[addonName][ms] or 0;
                     local adjustedValue = currentMetric - baselineMetric;
                     data[msOptionFieldMap[ms]] = adjustedValue;
@@ -335,14 +348,30 @@ function NAP:PrepareFilteredData()
                     for tickIndex = startingTickIndex, bucket.curTickIndex do
                         local tickMs = bucket.lastTick[addonName][tickIndex];
                         if tickMs and tickMs > 0 then
-                            data.peakTime = max(data.peakTime, tickMs);
+                            if tickMs > data.peakTime then
+                                data.peakTime = tickMs;
+                            end
                             data.totalMs = data.totalMs + tickMs;
-                            for _, ms in ipairs(msOptions) do
-                                local count = bucket[ms][addonName][tickIndex];
-                                if count and  count > 0 then
-                                    data[msOptionFieldMap[ms]] = data[msOptionFieldMap[ms]] + count;
-                                else
-                                    break;
+                            -- hardcoded for performance
+                            if tickMs > 1 then
+                                data.over1Ms = data.over1Ms + 1;
+                                if tickMs > 5 then
+                                    data.over5Ms = data.over5Ms + 1;
+                                    if tickMs > 10 then
+                                        data.over10Ms = data.over10Ms + 1;
+                                        if tickMs > 50 then
+                                            data.over50Ms = data.over50Ms + 1;
+                                            if tickMs > 100 then
+                                                data.over100Ms = data.over100Ms + 1;
+                                                if tickMs > 500 then
+                                                    data.over500Ms = data.over500Ms + 1;
+                                                    if tickMs > 1000 then
+                                                        data.over1000Ms = data.over1000Ms + 1;
+                                                    end
+                                                end
+                                            end
+                                        end
+                                    end
                                 end
                             end
                         end

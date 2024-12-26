@@ -45,7 +45,8 @@ NAP.initialMetrics = {};
 NAP.resetBaselineMetrics = NAP.initialMetrics;
 
 NAP.totalMs = {};
-NAP.totalTicks = {};
+NAP.loadedAtTick = {};
+NAP.tickNumber = 0;
 NAP.peakMs = {};
 NAP.snapshots = {
     --- @type NAP_Bucket[]
@@ -145,7 +146,7 @@ function NAP:ADDON_LOADED(addonName)
     self.loadedAddons[addonName] = true;
     self.addons[addonName].loaded = true;
     self.totalMs[addonName] = 0;
-    self.totalTicks[addonName] = 0;
+    self.loadedAtTick[addonName] = self.tickNumber;
     self.peakMs[addonName] = 0;
     self.snapshots.lastBucket.lastTick[addonName] = {};
     for ms in pairs(msMetricMap) do
@@ -174,9 +175,10 @@ end
 function NAP:OnUpdate()
     if not self.collectData then return end
 
+    self.tickNumber = self.tickNumber + 1;
+
     local peakMs = self.peakMs;
     local totalMs = self.totalMs;
-    local totalTicks = self.totalTicks;
     local currentMetrics = self.currentMetrics;
 
     local lastBucket = self.snapshots.lastBucket;
@@ -188,7 +190,6 @@ function NAP:OnUpdate()
 
     local getMetric = C_AddOnProfiler.GetAddOnMetric;
     for addonName in pairs(self.loadedAddons) do
-        totalTicks[addonName] = totalTicks[addonName] + 1;
         local lastTickMs = getMetric(addonName, Enum.AddOnProfilerMetric.LastTime);
         if lastTickMs > 0 then
             lastBucket.lastTick[addonName][curTickIndex] = lastTickMs;
@@ -214,12 +215,13 @@ end
 
 function NAP:ResetMetrics()
     self.resetBaselineMetrics = CopyTable(self.currentMetrics);
+    self.tickNumber = 0;
+    self.snapshots.buckets = {};
+    self:InitNewBucket();
     for addonName in pairs(self.loadedAddons) do
         self.totalMs[addonName] = 0;
         self.peakMs[addonName] = 0;
-        self.totalTicks[addonName] = 0;
-        self.snapshots.buckets = {};
-        self:InitNewBucket();
+        self.loadedAtTick[addonName] = 0;
     end
 end
 
@@ -326,7 +328,7 @@ function NAP:PrepareFilteredData()
                 end
                 data.peakTime = self.peakMs[addonName];
                 data.totalMs = self.totalMs[addonName];
-                data.numberOfTicks = self.totalTicks[addonName];
+                data.numberOfTicks = self.tickNumber - self.loadedAtTick[addonName];
             else
                 for bucket, startingTickIndex in pairs(withinHistory) do
                     data.numberOfTicks = data.numberOfTicks + ((bucket.curTickIndex - startingTickIndex) + 1);
@@ -363,6 +365,9 @@ function NAP:PrepareFilteredData()
     end
 
     self.dataProvider = CreateDataProvider(self.filteredData)
+    if self.sortComparator then
+        self.dataProvider:SetSortComparator(self.sortComparator)
+    end
 end
 
 function NAP:InitUI()
@@ -388,16 +393,12 @@ function NAP:InitUI()
             ---@param a NAP_ElementData
             ---@param b NAP_ElementData
             [ORDER_ASC] = function(a, b)
-                return a[key] < b[key]
-                    or a[key] == b[key]
-                    and a.addonName < b.addonName;
+                return a[key] < b[key] or (a[key] == b[key] and a.addonName < b.addonName);
             end,
             ---@param a NAP_ElementData
             ---@param b NAP_ElementData
             [ORDER_DESC] = function(a, b)
-                return a[key] > b[key]
-                    or a[key] == b[key]
-                    and a.addonName < b.addonName;
+                return a[key] > b[key] or (a[key] == b[key] and a.addonName < b.addonName);
             end,
         };
     end
@@ -406,7 +407,6 @@ function NAP:InitUI()
             justifyLeft = true,
             title = "Addon Name",
             width = 300,
-            order = ORDER_ASC,
             textFormatter = RAW_FORMAT,
             textKey = "addonTitle",
             sortMethods = {
@@ -425,16 +425,14 @@ function NAP:InitUI()
         {
             title = "Boss Avg",
             width = 96,
-            order = ORDER_ASC,
             textFormatter = TIME_FORMAT,
             textKey = "encounterAvg",
-            tooltip = "Average time spent per frame during a boss encounter. Ignores the History Range",
+            tooltip = "Average CPU time spent per frame during a boss encounter. Ignores the History Range",
             sortMethods = makeSortMethods("encounterAvg"),
         },
         {
             title = "Peak Time",
             width = 96,
-            order = ORDER_ASC,
             textFormatter = TIME_FORMAT,
             textKey = "peakTime",
             tooltip = "Biggest spike in ms, within the History Range.",
@@ -443,16 +441,14 @@ function NAP:InitUI()
         {
             title = "Average",
             width = 96,
-            order = ORDER_ASC,
             textFormatter = TIME_FORMAT,
             textKey = "averageMs",
-            tooltip = "Average time spent per frame.",
+            tooltip = "Average CPU time spent per frame.",
             sortMethods = makeSortMethods("averageMs"),
         },
         {
             title = "Total",
             width = 108,
-            order = ORDER_ASC,
             textFormatter = TIME_FORMAT,
             textKey = "totalMs",
             tooltip = "Total CPU time spent, within the History Range.",
@@ -463,7 +459,6 @@ function NAP:InitUI()
         t_insert(COLUMN_INFO, {
             title = "Over " .. ms .. "ms",
             width = 80 + (strlen(ms) * 5),
-            order = ORDER_ASC,
             textFormatter = COUNTER_FORMAT,
             textKey = msOptionFieldMap[ms],
             tooltip = "How many times the addon took longer than " .. ms .. "ms per frame.",
@@ -473,7 +468,6 @@ function NAP:InitUI()
     t_insert(COLUMN_INFO, {
         title = "Spike Sum",
         width = 96,
-        order = ORDER_ASC,
         textFormatter = ROUND_TIME_FORMAT,
         textKey = "overMsSum",
         tooltip = "Sum of all the separate spikes.",
@@ -485,11 +479,13 @@ function NAP:InitUI()
     local UPDATE_INTERVAL = 1
     local continuousUpdate = true
 
-    local function sortFilteredData()
+    local function updateSortComparator()
+        self.sortComparator = COLUMN_INFO[activeSort].sortMethods[activeOrder]
         if self.dataProvider then
-            self.dataProvider:SetSortComparator(COLUMN_INFO[activeSort].sortMethods[activeOrder])
+            self.dataProvider:SetSortComparator(self.sortComparator)
         end
     end
+    updateSortComparator()
 
     -------------
     -- DISPLAY --
@@ -501,7 +497,6 @@ function NAP:InitUI()
             self.elapsed = (self.elapsed or 0) + elapsed
             if self.elapsed >= UPDATE_INTERVAL then
                 NAP:PrepareFilteredData()
-                sortFilteredData()
 
                 local perc = self.ScrollBox:GetScrollPercentage()
                 self.ScrollBox:Flush()
@@ -641,12 +636,15 @@ function NAP:InitUI()
         end
 
         function headers:OnClick(index)
+            local columnChanged = activeSort ~= index
             activeSort = index
 
-            COLUMN_INFO[index].order = COLUMN_INFO[index].order * -1
-            activeOrder = COLUMN_INFO[index].order
-
-            sortFilteredData()
+            if columnChanged then
+                activeOrder = ORDER_DESC
+            else
+                activeOrder = activeOrder == ORDER_DESC and ORDER_ASC or ORDER_DESC
+            end
+            updateSortComparator()
 
             self:UpdateArrow(index)
         end
@@ -668,8 +666,15 @@ function NAP:InitUI()
                 if notes and notes ~= "" then
                     GameTooltip:AddLine(notes, 1, 1, 1, true)
                 end
-                GameTooltip:AddDoubleLine("Peak Time (since game start):", TIME_FORMAT(data.peakTime), 1, 0.92, 0, 1, 1, 1)
-                GameTooltip:AddDoubleLine("Encounter Avg:", TIME_FORMAT(data.encounterAvg), 1, 0.92, 0, 1, 1, 1)
+                GameTooltip:AddLine(" ")
+                if data.addonName == thisAddonName then
+                    GameTooltip:AddLine("Note: The profiler has to do a lot of work while showing the UI, the numbers displayed here are not representative of the passive background CPU usage.", 1, 1, 1, true)
+                    GameTooltip:AddLine(" ")
+                end
+                GameTooltip:AddDoubleLine("Peak CPU time:", TIME_FORMAT(data.peakTime), 1, 0.92, 0, 1, 1, 1)
+                GameTooltip:AddDoubleLine("Average CPU time per frame:", TIME_FORMAT(data.averageMs), 1, 0.92, 0, 1, 1, 1)
+                GameTooltip:AddDoubleLine("Total CPU time:", TIME_FORMAT(data.totalMs), 1, 0.92, 0, 1, 1, 1)
+                GameTooltip:AddDoubleLine("Number of frames:", RAW_FORMAT(data.numberOfTicks), 1, 0.92, 0, 1, 1, 1)
                 GameTooltip:Show()
             end
         end
@@ -857,7 +862,6 @@ function NAP:InitUI()
 
         updateButton:SetScript("OnClick", function()
             NAP:PrepareFilteredData()
-            sortFilteredData()
 
             local perc = display.ScrollBox:GetScrollPercentage()
             display.ScrollBox:Flush()
@@ -924,7 +928,9 @@ function NAP:InitUI()
         resetButton:SetOnClickHandler(function()
             self:ResetMetrics()
 
-            display.elapsed = UPDATE_INTERVAL
+            RunNextFrame(function()
+                display.elapsed = UPDATE_INTERVAL
+            end)
         end)
     end
 end
@@ -937,6 +943,7 @@ function NAP:EnableLogging()
     self.ToggleButton:SetText("Disable")
     DynamicResizeButton_Resize(self.ToggleButton)
 
+    self.eventFrame:Show()
     self:StartPurgeTicker()
 
     self.ProfilerFrame.ScrollBox:Flush()
@@ -948,11 +955,12 @@ function NAP:DisableLogging()
 
     self.collectData = false
 
+    self.eventFrame:Hide()
     if self.purgerTicker then
         self.purgerTicker:Cancel()
     end
 
-    t_wipe(self.snapshots)
+    self:ResetMetrics()
     t_wipe(self.filteredData)
     self.dataProvider = nil
 end

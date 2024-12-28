@@ -720,6 +720,23 @@ function NAP:InitUI()
         local scrollBar = CreateFrame("EventFrame", "$parentScrollBar", display, "MinimalScrollBar")
         scrollBar:SetPoint("TOPLEFT", scrollBox, "TOPRIGHT", 4, -4)
         scrollBar:SetPoint("BOTTOMLEFT", scrollBox, "BOTTOMRIGHT", 4, 4)
+        local thumb = scrollBar.Track.Thumb;
+        local mouseDown = false
+        thumb:HookScript("OnMouseDown", function(self, button)
+            if button ~= "LeftButton" then return end
+            mouseDown = true
+            self:RegisterEvent("GLOBAL_MOUSE_UP")
+        end)
+        thumb:HookScript("OnEvent", function(self, event, ...)
+            if event == "GLOBAL_MOUSE_UP" then
+                local button = ...
+                if button ~= "LeftButton" then return end
+                if mouseDown then
+                    scrollBar.onButtonMouseUp(self, button)
+                end
+                mouseDown = false
+            end
+        end)
 
         local view = CreateScrollBoxListLinearView(2, 0, 2, 2, 2)
         view:SetElementExtent(20)

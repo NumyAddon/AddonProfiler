@@ -74,6 +74,18 @@ do
     end
 end
 
+--- collect all available data
+local ACTIVE_MODE = 'active';
+--- collect only total and peak data - disables history range
+--- @todo not yet implemented
+local PERFORMANCE_MODE = 'performance';
+--- collect no data at all, just reset the spike ms counters on reset - disables history range, and maybe show different columns?
+--- @todo not yet implemented
+local PASSIVE_MODE = 'passive';
+
+--- @todo: add some radio buttons and logic to toggle between modes
+NAP.mode = ACTIVE_MODE;
+
 --- @type table<string, { title: string, notes: string, loaded: boolean }>
 NAP.addons = {};
 --- @type table<string, boolean> # list of addon names
@@ -104,7 +116,7 @@ function NAP:Init()
         end
     end
 
-    self.eventFrame:SetScript('OnUpdate', function() self:OnUpdate() end);
+    self.eventFrame:SetScript('OnUpdate', function() self:OnUpdateActiveMode() end);
     self.eventFrame:SetScript('OnEvent', function(_, event, ...)
         if self[event] then self[event](self, ...); end
     end);
@@ -130,7 +142,7 @@ function NAP:Init()
     end;
     RunNextFrame(function()
         if NumyProfiler then -- the irony of profiling the profiler (-:
-            self.OnUpdate = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'OnUpdate', self.OnUpdate);
+            self.OnUpdateActiveMode = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'OnUpdateActiveMode', self.OnUpdateActiveMode);
             self.PurgeOldData = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PurgeOldData', self.PurgeOldData);
         end
     end);
@@ -177,7 +189,7 @@ function NAP:InitNewBucket()
     return lastBucket;
 end
 
-function NAP:OnUpdate()
+function NAP:OnUpdateActiveMode()
     self.tickNumber = self.tickNumber + 1;
 
     local lastBucket = self.snapshots.lastBucket;
@@ -193,7 +205,27 @@ function NAP:OnUpdate()
     for addonName in pairs(self.loadedAddons) do
         local lastTickMs = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_LastTime);
         if lastTickMs > 0 then
+            totalMs[addonName] = totalMs[addonName] + lastTickMs;
             lastTick[addonName][curTickIndex] = lastTickMs;
+            if lastTickMs > peakMs[addonName] then
+                peakMs[addonName] = lastTickMs;
+            end
+        end
+    end
+end
+
+--- performance mode OnUpdate script
+--- right now the only difference is that it doesn't store the lastTickMs
+--- more differences might come up in the future
+function NAP:OnUpdatePerformanceMode()
+    self.tickNumber = self.tickNumber + 1;
+
+    local totalMs = self.totalMs;
+    local peakMs = self.peakMs;
+
+    for addonName in pairs(self.loadedAddons) do
+        local lastTickMs = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_LastTime);
+        if lastTickMs > 0 then
             totalMs[addonName] = totalMs[addonName] + lastTickMs;
             if lastTickMs > peakMs[addonName] then
                 peakMs[addonName] = lastTickMs;
@@ -234,6 +266,9 @@ end
 
 local BUCKET_CUTOFF = 2000; -- rather arbitrary number, but interestingly, the lower your fps, the less often actual work will be performed to purge old data ^^
 function NAP:PurgeOldData()
+    if self.mode ~= ACTIVE_MODE then -- only active mode uses buckets
+        return;
+    end
     if self.snapshots.lastBucket.curTickIndex > BUCKET_CUTOFF then
         self:InitNewBucket();
     end
@@ -292,13 +327,22 @@ end
 ---@field overMsSum number
 
 function NAP:PrepareFilteredData()
-    -- idc about recycling here, just wipe it
-    t_wipe(self.filteredData)
-    self.dataProvider = nil
 
-    if not self.collectData then return end
+    local now = self.ProfilerFrame.frozenAt or GetTime();
 
-    local minTimestamp = GetTime() - self.curHistoryRange;
+    local minTimestamp = now - self.curHistoryRange;
+
+    local prevTimestamp = self.ProfilerFrame.minTimeStamp;
+    local prevMatch = self.ProfilerFrame.curMatch;
+
+    if prevTimestamp == minTimestamp and prevMatch == self.curMatch then
+        return;
+    end
+
+    t_wipe(self.filteredData);
+    self.dataProvider = nil;
+    self.ProfilerFrame.minTimeStamp = minTimestamp;
+    self.ProfilerFrame.curMatch = self.curMatch;
 
     local withinHistory = {};
     if 0 ~= self.curHistoryRange then
@@ -949,7 +993,7 @@ function NAP:InitUI()
 
         local STATS_FORMAT = "|cfff8f8f2%s|r"
         function stats:Update()
-            self:SetFormattedText(STATS_FORMAT, continuousUpdate and "Live Updating List" or "Paused")
+            self:SetFormattedText(STATS_FORMAT, NAP.collectData and (continuousUpdate and "Live Updating List" or "Paused") or "List is |cffff0000frozen|r")
         end
 
         self.ToggleButton = CreateFrame("Button", "$parentToggle", display, "UIPanelButtonTemplate, UIButtonTemplate")
@@ -964,6 +1008,7 @@ function NAP:InitUI()
             else
                 self:EnableLogging()
             end
+            display.Stats:Update()
         end)
 
         local resetButton = CreateFrame("Button", "$parentReset", display, "UIPanelButtonTemplate, UIButtonTemplate")
@@ -986,6 +1031,11 @@ function NAP:IsLogging()
 end
 
 function NAP:EnableLogging()
+    self.ProfilerFrame.frozenAt = nil
+    self:ResetMetrics()
+    t_wipe(self.filteredData)
+    self.dataProvider = nil
+
     self.ToggleButton:SetText("Disable")
     DynamicResizeButton_Resize(self.ToggleButton)
 
@@ -996,6 +1046,7 @@ function NAP:EnableLogging()
 end
 
 function NAP:DisableLogging()
+    self.ProfilerFrame.frozenAt = GetTime()
     self.ToggleButton:SetText("Enable")
     DynamicResizeButton_Resize(self.ToggleButton)
 
@@ -1005,10 +1056,6 @@ function NAP:DisableLogging()
     if self.purgerTicker then
         self.purgerTicker:Cancel()
     end
-
-    self:ResetMetrics()
-    t_wipe(self.filteredData)
-    self.dataProvider = nil
 end
 
 function NAP:ToggleFrame()

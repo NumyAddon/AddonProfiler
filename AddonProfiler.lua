@@ -376,7 +376,7 @@ function NAP:PrepareFilteredData()
                 data[msOptionFieldMap[ms]] = 0;
             end
             if 0 == self.curHistoryRange then
-                local currentMetrics = self:GetCurrentMsSpikeMetrics(addonName);
+                local currentMetrics = self.ProfilerFrame.frozenMetrics and self.ProfilerFrame.frozenMetrics[addonName] or self:GetCurrentMsSpikeMetrics(addonName);
                 for ms in pairs(msMetricMap) do
                     local currentMetric = currentMetrics[ms] or 0;
                     local baselineMetric = self.resetBaselineMetrics[addonName][ms] or 0;
@@ -1032,6 +1032,7 @@ end
 
 function NAP:EnableLogging()
     self.ProfilerFrame.frozenAt = nil
+    self.ProfilerFrame.frozenMetrics = nil
     self:ResetMetrics()
     t_wipe(self.filteredData)
     self.dataProvider = nil
@@ -1047,6 +1048,7 @@ end
 
 function NAP:DisableLogging()
     self.ProfilerFrame.frozenAt = GetTime()
+    self.ProfilerFrame.frozenMetrics = self:GetCurrentMsSpikeMetrics()
     self.ToggleButton:SetText("Enable")
     DynamicResizeButton_Resize(self.ToggleButton)
 

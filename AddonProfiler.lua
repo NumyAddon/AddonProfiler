@@ -841,7 +841,7 @@ function NAP:InitUI()
                     header:SetScript("OnClick", function(self, button)
                         headers:OnHeaderClick(self:GetID(), button, self)
                     end)
-                    header:RegisterForClicks("AnyUp", "AnyDown")
+                    header:RegisterForClicks("AnyDown")
                 end
             end
         end

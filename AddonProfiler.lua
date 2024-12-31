@@ -11,7 +11,9 @@ local GetTime = GetTime
 local C_AddOnProfiler_GetAddOnMetric = C_AddOnProfiler.GetAddOnMetric;
 local C_AddOnProfiler_GetOverallMetric = C_AddOnProfiler.GetOverallMetric;
 local Enum_AddOnProfilerMetric_LastTime = Enum.AddOnProfilerMetric.LastTime;
+local Enum_AddOnProfilerMetric_RecentAverageTime = Enum.AddOnProfilerMetric.RecentAverageTime;
 local Enum_AddOnProfilerMetric_EncounterAverageTime = Enum.AddOnProfilerMetric.EncounterAverageTime;
+local Enum_AddOnProfilerMetric_PeakTime = Enum.AddOnProfilerMetric.PeakTime;
 
 local NAP = {};
 NAP.eventFrame = CreateFrame('Frame');
@@ -72,9 +74,6 @@ do
     };
     NAP.snapshots.buckets[1] = lastBucket;
     NAP.snapshots.lastBucket = lastBucket;
-    for ms in pairs(msMetricMap) do
-        lastBucket[ms] = {}
-    end
 end
 
 --- collect all available data
@@ -85,9 +84,6 @@ local PERFORMANCE_MODE = 'performance';
 --- collect no data at all, just reset the spike ms counters on reset - disables history range, and maybe show different columns?
 --- @todo not yet implemented
 local PASSIVE_MODE = 'passive';
-
---- @todo: add some radio buttons and logic to toggle between modes
-NAP.mode = nil;
 
 --- @type table<string, { title: string, notes: string, loaded: boolean }>
 NAP.addons = {};
@@ -145,7 +141,7 @@ function NAP:Init()
             self.PurgeOldData = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PurgeOldData', self.PurgeOldData);
         end
 
-        self:SwitchMode(self.db.mode);
+        self:SwitchMode(self.db.mode, true);
     end);
 end
 
@@ -153,6 +149,7 @@ local HEADER_IDS = {
     addonTitle = "addonTitle",
     encounterAvgMs = "encounterAvgMs",
     peakTimeMs = "peakTimeMs",
+    recentMs = "recentMs",
     averageMs = "averageMs",
     totalMs = "totalMs",
     ["overCount-1"] = "overCount-1",
@@ -175,6 +172,7 @@ function NAP:InitDB()
         [HEADER_IDS.addonTitle] = true,
         [HEADER_IDS.encounterAvgMs] = true,
         [HEADER_IDS.peakTimeMs] = true,
+        [HEADER_IDS.recentMs] = false,
         [HEADER_IDS.averageMs] = true,
         [HEADER_IDS.totalMs] = true,
         [HEADER_IDS['overCount-1']] = true,
@@ -218,29 +216,33 @@ function NAP:ADDON_LOADED(addonName)
     self.loadedAtTick[addonName] = self.tickNumber;
     self.peakMs[addonName] = 0;
     self.snapshots.lastBucket.lastTick[addonName] = {};
-    for ms in pairs(msMetricMap) do
-        self.snapshots.lastBucket[ms][addonName] = {};
-    end
     self.resetBaselineMetrics[addonName] = self:GetCurrentMsSpikeMetrics(addonName);
 end
 
-function NAP:SwitchMode(newMode)
-    if newMode == self.mode then
+function NAP:SwitchMode(newMode, force)
+    if newMode == self.db.mode and not force then
         return;
     end
     local historyDropdown = self.ProfilerFrame.HistoryDropdown;
-    self.mode = newMode;
+    self.db.mode = newMode;
     if newMode == ACTIVE_MODE then
         self.eventFrame:SetScript('OnUpdate', function() self:OnUpdateActiveMode() end);
         historyDropdown:Show();
     elseif newMode == PERFORMANCE_MODE then
         self.eventFrame:SetScript('OnUpdate', function() self:OnUpdatePerformanceMode() end);
         historyDropdown:Hide();
-    else
+    elseif newMode == PASSIVE_MODE then
         self.eventFrame:SetScript('OnUpdate', nil);
         historyDropdown:Hide();
     end
     self:ResetMetrics();
+    self.ProfilerFrame:RefreshActiveColumns();
+    self.ProfilerFrame:UpdateHeaders();
+    RunNextFrame(function()
+        self.ProfilerFrame.Headers:UpdateArrow();
+        self.ProfilerFrame:UpdateSortComparator();
+        self.ProfilerFrame:DoUpdate(true);
+    end);
 end
 
 function NAP:OnUpdateActiveMode()
@@ -307,9 +309,6 @@ end
 
 function NAP:InitNewBucket()
     local lastBucket = { curTickIndex = 0, tickMap = {}, lastTick = { [TOTAL_ADDON_METRICS_KEY] = {} } };
-    for ms in pairs(msMetricMap) do
-        lastBucket[ms] = {};
-    end
     for addonName in pairs(self.loadedAddons) do
         lastBucket.lastTick[addonName] = {};
     end
@@ -322,7 +321,7 @@ end
 
 local BUCKET_CUTOFF = 2000; -- rather arbitrary number, but interestingly, the lower your fps, the less often actual work will be performed to purge old data ^^
 function NAP:PurgeOldData()
-    if self.mode ~= ACTIVE_MODE then -- only active mode uses buckets
+    if self.db.mode ~= ACTIVE_MODE then -- only active mode uses buckets
         return;
     end
     if self.snapshots.lastBucket.curTickIndex > BUCKET_CUTOFF then
@@ -409,7 +408,7 @@ function NAP:GetCurrentMsSpikeMetrics(onlyForAddonName)
 end
 
 function NAP:GetActiveHistoryRange()
-    return self.db.mode == ACTIVE_MODE and self.curHistoryRange or INFINITE_HISTORY;
+    return (self.db.mode == ACTIVE_MODE and self.curHistoryRange) or INFINITE_HISTORY;
 end
 
 ---@class NAP_ElementData
@@ -418,6 +417,7 @@ end
 ---@field addonNotes string
 ---@field peakTime number
 ---@field encounterAvg number
+---@field recentMs number
 ---@field averageMs number
 ---@field totalMs number
 ---@field numberOfTicks number
@@ -496,8 +496,10 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory)
     };
     if TOTAL_ADDON_METRICS_KEY == addonName then
         data.encounterAvg = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_EncounterAverageTime);
+        data.recentMs = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_RecentAverageTime);
     else
         data.encounterAvg = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_EncounterAverageTime);
+        data.recentMs = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_RecentAverageTime);
     end
     for _, ms in pairs(msOptions) do
         data[msOptionFieldMap[ms]] = 0;
@@ -549,7 +551,15 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory)
             end
         end
     end
-    data.averageMs = data.totalMs / data.numberOfTicks;
+    data.averageMs = data.numberOfTicks > 0 and (data.totalMs / data.numberOfTicks) or 0; -- let's not divide by 0 :)
+
+    if self.db.mode == PASSIVE_MODE then
+        if TOTAL_ADDON_METRICS_KEY == addonName then
+            data.peakTime = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_PeakTime);
+        else
+            data.peakTime = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_PeakTime);
+        end
+    end
 
     data.overMsSum = 0;
     local previousGroupCount = 0;
@@ -583,17 +593,18 @@ function NAP:InitUI()
 
     local COLUMN_INFO = {};
     do
+        local Inf = math.huge
         local function makeSortMethods(key)
             return {
                 ---@param a NAP_ElementData
                 ---@param b NAP_ElementData
                 [ORDER_ASC] = function(a, b)
-                    return a[key] < b[key] or (a[key] == b[key] and a.addonName < b.addonName);
+                    return (a[key] ~= Inf and a[key] < b[key]) or (a[key] == b[key] and a.addonName < b.addonName);
                 end,
                 ---@param a NAP_ElementData
                 ---@param b NAP_ElementData
                 [ORDER_DESC] = function(a, b)
-                    return a[key] > b[key] or (a[key] == b[key] and a.addonName < b.addonName);
+                    return (a[key] ~= Inf and a[key] > b[key]) or (a[key] == b[key] and a.addonName < b.addonName);
                 end,
             };
         end
@@ -602,6 +613,7 @@ function NAP:InitUI()
         COLUMN_INFO[HEADER_IDS.addonTitle] = {
             ID = HEADER_IDS.addonTitle,
             order = counter(),
+            availableInPassiveMode = true,
             justifyLeft = true,
             title = "Addon Name",
             width = 300,
@@ -623,6 +635,7 @@ function NAP:InitUI()
         COLUMN_INFO[HEADER_IDS.encounterAvgMs] = {
             ID = HEADER_IDS.encounterAvgMs,
             order = counter(),
+            availableInPassiveMode = true,
             title = "Boss Avg",
             width = 96,
             textFormatter = TIME_FORMAT,
@@ -633,12 +646,24 @@ function NAP:InitUI()
         COLUMN_INFO[HEADER_IDS.peakTimeMs] = {
             ID = HEADER_IDS.peakTimeMs,
             order = counter(),
+            availableInPassiveMode = true,
             title = "Peak Time",
             width = 96,
             textFormatter = TIME_FORMAT,
             textKey = "peakTime",
             tooltip = "Biggest spike in ms, within the History Range.",
             sortMethods = makeSortMethods("peakTime"),
+        };
+        COLUMN_INFO[HEADER_IDS.recentMs] = {
+            ID = HEADER_IDS.recentMs,
+            order = counter(),
+            availableInPassiveMode = true,
+            title = "Recent Ms",
+            width = 96,
+            textFormatter = TIME_FORMAT,
+            textKey = "recentMs",
+            tooltip = "Average CPU time spent in the last 60 frames. Ignores the History Range",
+            sortMethods = makeSortMethods("recentMs"),
         };
         COLUMN_INFO[HEADER_IDS.averageMs] = {
             ID = HEADER_IDS.averageMs,
@@ -654,7 +679,7 @@ function NAP:InitUI()
             ID = HEADER_IDS.totalMs,
             order = counter(),
             title = "Total",
-            width = 108,
+            width = 120,
             textFormatter = TIME_FORMAT,
             textKey = "totalMs",
             tooltip = "Total CPU time spent, within the History Range.",
@@ -664,6 +689,7 @@ function NAP:InitUI()
             COLUMN_INFO[HEADER_IDS["overCount-" .. ms]] = {
                 ID = HEADER_IDS["overCount-" .. ms],
                 order = counter(),
+                availableInPassiveMode = true,
                 title = "Over " .. ms .. "ms",
                 width = 80 + (strlen(ms) * 5),
                 textFormatter = COUNTER_FORMAT,
@@ -675,6 +701,7 @@ function NAP:InitUI()
         COLUMN_INFO[HEADER_IDS.spikeSumMs] = {
             ID = HEADER_IDS.spikeSumMs,
             order = counter(),
+            availableInPassiveMode = true,
             title = "Spike Sum",
             width = 96,
             textFormatter = ROUND_TIME_FORMAT,
@@ -684,28 +711,44 @@ function NAP:InitUI()
         };
     end
 
-    local activeSort, activeOrder = HEADER_IDS.averageMs, ORDER_DESC
-
-    local UPDATE_INTERVAL = 1
-    local continuousUpdate = true
-
-    local function updateSortComparator()
-        self.sortComparator = COLUMN_INFO[activeSort].sortMethods[activeOrder]
-        if self.dataProvider then
-            self.dataProvider:SetSortComparator(self.sortComparator)
-        end
-    end
-    updateSortComparator()
-
     -------------
     -- DISPLAY --
     -------------
     do
-        local ROW_HEIGHT = 20
 
-        self.ProfilerFrame = CreateFrame("Frame", "NumyAddonProfilerFrame", UIParent, "ButtonFrameTemplate")
-        local display = self.ProfilerFrame
+        local ROW_HEIGHT = 20
+        local UPDATE_INTERVAL = 1
+        local continuousUpdate = true
+
+        --- @class NAP_Display: Frame, ButtonFrameTemplate
+        local display = CreateFrame("Frame", "NumyAddonProfilerFrame", UIParent, "ButtonFrameTemplate")
+        self.ProfilerFrame = display
         do
+            do
+                local activeSort, activeOrder = HEADER_IDS.averageMs, ORDER_DESC
+                function display:SetActiveSort(sort, order)
+                    activeSort, activeOrder = sort, order
+                    self:UpdateSortComparator()
+                end
+                function display:GetActiveSort()
+                    local sort, order = activeSort, activeOrder
+                    if NAP.db.mode == PASSIVE_MODE and not COLUMN_INFO[sort].availableInPassiveMode then
+                        sort = HEADER_IDS.spikeSumMs
+                    end
+
+                    return sort, order
+                end
+            end
+
+            function display:UpdateSortComparator()
+                local sort, order = self:GetActiveSort()
+                NAP.sortComparator = COLUMN_INFO[sort].sortMethods[order]
+                if NAP.dataProvider then
+                    NAP.dataProvider:SetSortComparator(NAP.sortComparator)
+                end
+            end
+            display:UpdateSortComparator()
+
             function display:OnUpdate(elapsed)
                 self.elapsed = (self.elapsed or 0) + elapsed
                 if self.elapsed >= UPDATE_INTERVAL then
@@ -741,13 +784,17 @@ function NAP:InitUI()
             function display:OnHide()
                 self:SetScript("OnUpdate", nil)
             end
-            display.activeColumns = {}
-            for ID, info in pairs(COLUMN_INFO) do
-                if NAP.db.shownColumns[ID] then
-                    t_insert(display.activeColumns, info)
+
+            function display:RefreshActiveColumns()
+                display.activeColumns = {}
+                for ID, info in pairs(COLUMN_INFO) do
+                    if NAP.db.shownColumns[ID] and (NAP.db.mode ~= PASSIVE_MODE or info.availableInPassiveMode) then
+                        t_insert(display.activeColumns, info)
+                    end
                 end
+                table.sort(display.activeColumns, function(a, b) return a.order < b.order end)
             end
-            table.sort(display.activeColumns, function(a, b) return a.order < b.order end)
+            display:RefreshActiveColumns()
 
             t_insert(UISpecialFrames, self.ProfilerFrame:GetName())
             display:SetPoint("CENTER", 0, 0)
@@ -774,34 +821,6 @@ function NAP:InitUI()
             display.Inset:SetPoint("TOPLEFT", 8, (-86) - ROW_HEIGHT)
             display.Inset:SetPoint("BOTTOMRIGHT", -4, 30)
 
-            function display:HideHeader(headerID)
-                if headerID == 'addonTitle' then
-                    return
-                end
-                for index, column in pairs(self.activeColumns) do
-                    if column.ID == headerID then
-                        t_remove(self.activeColumns, index)
-                        break
-                    end
-                end
-                self:UpdateHeaders()
-                self:DoUpdate(true)
-            end
-
-            function display:ShowHeader(headerID)
-                local info
-                for ID, column in pairs(COLUMN_INFO) do
-                    if ID == headerID then
-                        info = column
-                        break
-                    end
-                end
-                t_insert(self.activeColumns, info)
-                table.sort(self.activeColumns, function(a, b) return a.order < b.order end)
-                self:UpdateHeaders()
-                self:DoUpdate(true)
-            end
-
             function display:UpdateHeaders()
                 self:UpdateWidth()
 
@@ -814,34 +833,34 @@ function NAP:InitUI()
                 --- @type FramePool<BUTTON,ColumnDisplayButtonTemplate>
                 local headerPool = headers.columnHeaders
                 for header in headerPool:EnumerateActive() do
-                    if header.initialized then
-                        return
+                    if not header.initialized then
+                        header.initialized = true
+                        local arrow = header:CreateTexture("OVERLAY")
+                        arrow:SetAtlas("auctionhouse-ui-sortarrow", true)
+                        arrow:SetPoint("LEFT", header:GetFontString(), "RIGHT", 0, 0)
+                        arrow:Hide()
+                        header.Arrow = arrow
+
+                        header:SetScript("OnEnter", function(self)
+                            local info = display.activeColumns[self:GetID()]
+                            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+                            GameTooltip:AddLine(self:GetText())
+                            if info.tooltip then
+                                GameTooltip:AddLine(info.tooltip, 1, 1, 1, true)
+                            end
+                            GameTooltip_AddInstructionLine(GameTooltip, LeftClickAtlasMarkup .. " Click to sort")
+                            GameTooltip_AddInstructionLine(GameTooltip, RightClickAtlasMarkup .. " Right-click to show / hide columns")
+
+                            GameTooltip:Show()
+                        end)
+                        header:SetScript("OnLeave", function()
+                            GameTooltip:Hide()
+                        end)
+                        header:SetScript("OnClick", function(self, button)
+                            headers:OnHeaderClick(self:GetID(), button, self)
+                        end)
+                        header:RegisterForClicks("AnyDown")
                     end
-                    local arrow = header:CreateTexture("OVERLAY")
-                    arrow:SetAtlas("auctionhouse-ui-sortarrow", true)
-                    arrow:SetPoint("LEFT", header:GetFontString(), "RIGHT", 0, 0)
-                    arrow:Hide()
-                    header.Arrow = arrow
-
-                    header:SetScript("OnEnter", function(self)
-                        local info = display.activeColumns[self:GetID()]
-                        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-                        GameTooltip:AddLine(self:GetText())
-                        if info.tooltip then
-                            GameTooltip:AddLine(info.tooltip, 1, 1, 1, true)
-                        end
-                        GameTooltip_AddInstructionLine(GameTooltip, LeftClickAtlasMarkup .. " Click to sort")
-                        GameTooltip_AddInstructionLine(GameTooltip, RightClickAtlasMarkup .. " Right-click to show / hide columns")
-
-                        GameTooltip:Show()
-                    end)
-                    header:SetScript("OnLeave", function()
-                        GameTooltip:Hide()
-                    end)
-                    header:SetScript("OnClick", function(self, button)
-                        headers:OnHeaderClick(self:GetID(), button, self)
-                    end)
-                    header:RegisterForClicks("AnyDown")
                 end
             end
         end
@@ -896,20 +915,48 @@ function NAP:InitUI()
         end)
         end
 
+        local modeMenu = CreateFrame("DropdownButton", nil, display, "WowStyle1DropdownTemplate");
+        display.ModeDropdown = modeMenu
+        do
+            modeMenu:SetPoint("LEFT", search, "RIGHT", 4, 0);
+            modeMenu:SetWidth(150);
+            modeMenu:SetFrameLevel(3);
+            --- @param rootDescription RootMenuDescriptionProxy
+            modeMenu:SetupMenu(function(_, rootDescription)
+                local function isSelected(data) return NAP.db.mode == data end
+                local function onSelection(data)
+                    NAP:SwitchMode(data)
+                    return MenuResponse.Refresh
+                end
+
+                rootDescription:CreateTitle("Mode")
+                local active = rootDescription:CreateRadio("Active Mode", isSelected, onSelection, ACTIVE_MODE)
+                local performance = rootDescription:CreateRadio("Performance Mode", isSelected, onSelection, PERFORMANCE_MODE)
+                local passive = rootDescription:CreateRadio("Passive Mode", isSelected, onSelection, PASSIVE_MODE)
+
+                active:SetTitleAndTextTooltip("Active Mode", "Provides the most amount of information, and allows you to select a History Range to filter by.")
+                performance:SetTitleAndTextTooltip("Performance Mode", "Performs slightly less work in the background, but does not allow you to select a History Range.")
+                passive:SetTitleAndTextTooltip("Passive Mode", "No information is collected in the background, which limits the columns that can be displayed. But 0 work is performed in the background while the UI is closed.")
+            end)
+        end
+
         local headers = CreateFrame("Button", "$parentHeaders", display, "ColumnDisplayTemplate")
         display.Headers = headers
         do
             headers:SetPoint("BOTTOMLEFT", display.Inset, "TOPLEFT", 1, ROW_HEIGHT + 1)
             headers:SetPoint("BOTTOMRIGHT", display.Inset, "TOPRIGHT", 0, -1)
 
-            function headers:UpdateArrow(index)
+            function headers:UpdateArrow()
+                local sort, order = display:GetActiveSort()
                 --- @type FramePool<BUTTON,ColumnDisplayButtonTemplate>
                 local headerPool = headers.columnHeaders
                 for header in headerPool:EnumerateActive() do
-                    if header:GetID() == index then
+                    local index = header:GetID()
+                    local columnID = display.activeColumns[index].ID
+                    if sort == columnID then
                         header.Arrow:Show()
 
-                        if activeOrder == ORDER_ASC then
+                        if order == ORDER_ASC then
                             header.Arrow:SetTexCoord(0, 1, 1, 0)
                         else
                             header.Arrow:SetTexCoord(0, 1, 0, 1)
@@ -920,25 +967,25 @@ function NAP:InitUI()
                 end
             end
 
-            function headers:OnHeaderClick(index, button, headerFrame)
+            function headers:OnHeaderClick(index, button)
                 if button == "LeftButton" then
+                    local sort, order = display:GetActiveSort()
                     local columnID = display.activeColumns[index].ID
-                    local columnChanged = activeSort ~= columnID
-                    activeSort = columnID
+                    local columnChanged = sort ~= columnID
+                    local newSort, newOrder = columnID, ORDER_DESC
 
-                    if columnChanged then
-                        activeOrder = ORDER_DESC
-                    else
-                        activeOrder = activeOrder == ORDER_DESC and ORDER_ASC or ORDER_DESC
+                    if not columnChanged then
+                        newOrder = order == ORDER_DESC and ORDER_ASC or ORDER_DESC
                     end
-                    updateSortComparator()
+                    display:SetActiveSort(newSort, newOrder)
+                    display:UpdateSortComparator()
 
-                    self:UpdateArrow(index)
+                    self:UpdateArrow()
                 elseif button == "RightButton" then
                     local headerOptions = {}
                     for ID, info in pairs(COLUMN_INFO) do
-                        if ID ~= "addonTitle" then
-                            t_insert(headerOptions, {info.title, info})
+                        if ID ~= "addonTitle" and (NAP.db.mode ~= PASSIVE_MODE or info.availableInPassiveMode) then
+                            t_insert(headerOptions, { info.title, info })
                         end
                     end
                     table.sort(headerOptions, function(a, b) return a[2].order < b[2].order end)
@@ -948,18 +995,19 @@ function NAP:InitUI()
                     local function onSelection(data)
                         if NAP.db.shownColumns[data.ID] then
                             NAP.db.shownColumns[data.ID] = false
-                            display:HideHeader(data.ID)
                         else
                             NAP.db.shownColumns[data.ID] = true
-                            display:ShowHeader(data.ID)
                         end
+                        display:RefreshActiveColumns()
+                        display:UpdateHeaders()
+                        display:DoUpdate(true)
                         return MenuResponse.Refresh
                     end
                     MenuUtil.CreateCheckboxContextMenu(nil, isSelected, onSelection, unpack(headerOptions))
                 end
             end
 
-            headers:UpdateArrow(activeSort)
+            headers:UpdateArrow()
             headers.Background:Hide()
             headers.TopTileStreaks:Hide()
             display:UpdateHeaders()

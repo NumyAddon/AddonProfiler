@@ -3,7 +3,6 @@ local thisAddonName = ...
 local s_trim = string.trim
 local t_insert = table.insert
 local t_removemulti = table.removemulti
-local t_remove = table.remove
 local t_wipe = table.wipe
 local pairs = pairs
 local GetTime = GetTime
@@ -79,10 +78,8 @@ end
 --- collect all available data
 local ACTIVE_MODE = 'active';
 --- collect only total and peak data - disables history range
---- @todo mostly implemented, but no toggle yet
 local PERFORMANCE_MODE = 'performance';
 --- collect no data at all, just reset the spike ms counters on reset - disables history range, and maybe show different columns?
---- @todo not yet implemented
 local PASSIVE_MODE = 'passive';
 
 --- @type table<string, { title: string, notes: string, loaded: boolean }>
@@ -148,10 +145,15 @@ end
 local HEADER_IDS = {
     addonTitle = "addonTitle",
     encounterAvgMs = "encounterAvgMs",
+    overallEncounterAvgPercent = "overallEncounterAvgPercent",
     peakTimeMs = "peakTimeMs",
+    overallPeakTimePercent = "overallPeakTimePercent",
     recentMs = "recentMs",
+    overallRecentPercent = "overallRecentPercent",
     averageMs = "averageMs",
     totalMs = "totalMs",
+    overallTotalPercent = "overallTotalPercent",
+    applicationTotalPercent = "applicationTotalPercent",
     ["overCount-1"] = "overCount-1",
     ["overCount-5"] = "overCount-5",
     ["overCount-10"] = "overCount-10",
@@ -171,10 +173,15 @@ function NAP:InitDB()
     local defaultShownColumns = {
         [HEADER_IDS.addonTitle] = true,
         [HEADER_IDS.encounterAvgMs] = true,
+        [HEADER_IDS.overallEncounterAvgPercent] = false,
         [HEADER_IDS.peakTimeMs] = true,
+        [HEADER_IDS.overallPeakTimePercent] = false,
         [HEADER_IDS.recentMs] = false,
+        [HEADER_IDS.overallRecentPercent] = false,
         [HEADER_IDS.averageMs] = true,
         [HEADER_IDS.totalMs] = true,
+        [HEADER_IDS.overallTotalPercent] = true,
+        [HEADER_IDS.applicationTotalPercent] = true,
         [HEADER_IDS['overCount-1']] = true,
         [HEADER_IDS['overCount-5']] = true,
         [HEADER_IDS['overCount-10']] = true,
@@ -416,10 +423,15 @@ end
 ---@field addonTitle string
 ---@field addonNotes string
 ---@field peakTime number
+---@field overallPeakTime number
 ---@field encounterAvg number
+---@field overallEncounterAvg number
 ---@field recentMs number
+---@field overallRecentMs number
 ---@field averageMs number
 ---@field totalMs number
+---@field overallTotalMs number
+---@field applicationTotalMs number
 ---@field numberOfTicks number
 ---@field over1Ms number
 ---@field over5Ms number
@@ -429,6 +441,7 @@ end
 ---@field over500Ms number
 ---@field over1000Ms number
 ---@field overMsSum number
+-- 11.1 will likely allow adding applicationPeakTime, applicationEncounterAvg, applicationRecentMs
 
 --- @param forceUpdate boolean
 --- @return table<NAP_Bucket, number>? bucketsWithinHistory
@@ -462,11 +475,12 @@ function NAP:PrepareFilteredData(forceUpdate)
             end
         end
     end
+    local overallStats = self:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory);
 
     for addonName in pairs(self.loadedAddons) do
         local info = self.addons[addonName];
         if info.title:lower():match(self.curMatch) then
-            t_insert(self.filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory));
+            t_insert(self.filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats));
         end
     end
 
@@ -479,20 +493,22 @@ function NAP:PrepareFilteredData(forceUpdate)
 end
 
 ---@param addonName string
----@param info { title: string, notes: string, loaded: boolean }
+---@param info nil|{ title: string, notes: string, loaded: boolean }
 ---@param bucketsWithinHistory table<NAP_Bucket, number>
+---@param overallStats NAP_ElementData?
 ---@return NAP_ElementData
-function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory)
+function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, overallStats)
     ---@type NAP_ElementData
     ---@diagnostic disable-next-line: missing-fields
     local data = {
         addonName = addonName,
-        addonTitle = info.title,
-        addonNotes = info.notes,
+        addonTitle = info and info.title or '',
+        addonNotes = info and info.notes or '',
         peakTime = 0,
         averageMs = 0,
         totalMs = 0,
         numberOfTicks = 0,
+        applicationTotalMs = 0,
     };
     if TOTAL_ADDON_METRICS_KEY == addonName then
         data.encounterAvg = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_EncounterAverageTime);
@@ -504,7 +520,9 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory)
     for _, ms in pairs(msOptions) do
         data[msOptionFieldMap[ms]] = 0;
     end
+    local now = self.frozenAt or GetTime();
     if INFINITE_HISTORY == self:GetActiveHistoryRange() then
+        data.applicationTotalMs = (now - self.resetTime) * 1000;
         local currentMetrics = self.frozenMetrics and self.frozenMetrics[addonName] or self:GetCurrentMsSpikeMetrics(addonName);
         for ms in pairs(msMetricMap) do
             local currentMetric = currentMetrics[ms] or 0;
@@ -516,8 +534,16 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory)
         data.totalMs = self.totalMs[addonName];
         data.numberOfTicks = self.tickNumber - self.loadedAtTick[addonName];
     else
+        local firstTickTime = now;
+        local lastTickTime = 0;
         for bucket, startingTickIndex in pairs(bucketsWithinHistory) do
             data.numberOfTicks = data.numberOfTicks + ((bucket.curTickIndex - startingTickIndex) + 1);
+            if bucket.tickMap[startingTickIndex] < firstTickTime then
+                firstTickTime = bucket.tickMap[startingTickIndex];
+            end
+            if bucket.tickMap[bucket.curTickIndex] > lastTickTime then
+                lastTickTime = bucket.tickMap[bucket.curTickIndex];
+            end
             for tickIndex = startingTickIndex, bucket.curTickIndex do
                 local tickMs = bucket.lastTick[addonName] and bucket.lastTick[addonName][tickIndex];
                 if tickMs and tickMs > 0 then
@@ -550,6 +576,8 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory)
                 end
             end
         end
+
+        data.applicationTotalMs = (lastTickTime - firstTickTime) * 1000;
     end
     data.averageMs = data.numberOfTicks > 0 and (data.totalMs / data.numberOfTicks) or 0; -- let's not divide by 0 :)
 
@@ -568,6 +596,18 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory)
         local count = data[msOptionFieldMap[ms]];
         data.overMsSum = data.overMsSum + ((count - previousGroupCount) * ms);
         previousGroupCount = count;
+    end
+
+    if TOTAL_ADDON_METRICS_KEY == addonName then
+        data.overallPeakTime = data.peakTime;
+        data.overallEncounterAvg = data.encounterAvg;
+        data.overallRecentMs = data.recentMs;
+        data.overallTotalMs = data.totalMs;
+    elseif overallStats then
+        data.overallPeakTime = overallStats.peakTime;
+        data.overallEncounterAvg = overallStats.encounterAvg;
+        data.overallRecentMs = overallStats.recentMs;
+        data.overallTotalMs = overallStats.totalMs;
     end
 
     return data;
@@ -590,9 +630,18 @@ function NAP:InitUI()
     local ROUND_TIME_FORMAT = function(val) return (val > 0 and whiteColorFormat or greyColorFormat):format(val) .. msText; end;
     local COUNTER_FORMAT = function(val) return (val > 0 and whiteColorFormat or greyColorFormat):format(val) .. xText; end;
     local RAW_FORMAT = function(val) return val; end;
+    local PERCENT_FORMAT = function(val)
+        local color = val > 0.00005 and whiteColorFormat or greyColorFormat;
+
+        return val >= 1 and color:format("100.00%") or color:format(("%.2f%%"):format(val * 100));
+    end;
 
     local COLUMN_INFO = {};
     do
+        local totalAddonsText = NORMAL_FONT_COLOR:WrapTextInColorCode("Total Addons");
+        local applicationText = NORMAL_FONT_COLOR:WrapTextInColorCode("Application");
+        local applicationShortText = NORMAL_FONT_COLOR:WrapTextInColorCode("App");
+
         local Inf = math.huge
         local function makeSortMethods(key)
             return {
@@ -640,7 +689,21 @@ function NAP:InitUI()
             width = 96,
             textFormatter = TIME_FORMAT,
             textKey = "encounterAvg",
-            tooltip = "Average CPU time spent per frame during a boss encounter. Ignores the History Range",
+            tooltip = "Average CPU time spent per frame during a boss encounter. Ignores the History Range.",
+            sortMethods = makeSortMethods("encounterAvg"),
+        };
+        COLUMN_INFO[HEADER_IDS.overallEncounterAvgPercent] = {
+            ID = HEADER_IDS.overallEncounterAvgPercent,
+            order = counter(),
+            availableInPassiveMode = true,
+            title = "Boss Avg %",
+            width = 96,
+            textFormatter = PERCENT_FORMAT,
+            ---@param data NAP_ElementData
+            textFunc = function(data)
+                return data.overallEncounterAvg > 0 and (data.encounterAvg / data.overallEncounterAvg) or 0;
+            end,
+            tooltip = "Percentage of " .. totalAddonsText .. " CPU time spent per frame during a boss encounter. Ignores the History Range.",
             sortMethods = makeSortMethods("encounterAvg"),
         };
         COLUMN_INFO[HEADER_IDS.peakTimeMs] = {
@@ -654,6 +717,20 @@ function NAP:InitUI()
             tooltip = "Biggest spike in ms, within the History Range.",
             sortMethods = makeSortMethods("peakTime"),
         };
+        COLUMN_INFO[HEADER_IDS.overallPeakTimePercent] = {
+            ID = HEADER_IDS.overallPeakTimePercent,
+            order = counter(),
+            availableInPassiveMode = true,
+            title = "Peak %",
+            width = 96,
+            textFormatter = PERCENT_FORMAT,
+            ---@param data NAP_ElementData
+            textFunc = function(data)
+                return data.overallPeakTime > 0 and (data.peakTime / data.overallPeakTime) or 0;
+            end,
+            tooltip = "Percentage of " .. totalAddonsText .. " biggest spike in ms, within the History Range.",
+            sortMethods = makeSortMethods("peakTime"),
+        };
         COLUMN_INFO[HEADER_IDS.recentMs] = {
             ID = HEADER_IDS.recentMs,
             order = counter(),
@@ -663,6 +740,20 @@ function NAP:InitUI()
             textFormatter = TIME_FORMAT,
             textKey = "recentMs",
             tooltip = "Average CPU time spent in the last 60 frames. Ignores the History Range",
+            sortMethods = makeSortMethods("recentMs"),
+        };
+        COLUMN_INFO[HEADER_IDS.overallRecentPercent] = {
+            ID = HEADER_IDS.overallRecentPercent,
+            order = counter(),
+            availableInPassiveMode = true,
+            title = "Recent %",
+            width = 96,
+            textFormatter = PERCENT_FORMAT,
+            ---@param data NAP_ElementData
+            textFunc = function(data)
+                return data.overallRecentMs > 0 and (data.recentMs / data.overallRecentMs) or 0;
+            end,
+            tooltip = "Percentage of " .. totalAddonsText .. " CPU time spent in the last 60 frames. Ignores the History Range.",
             sortMethods = makeSortMethods("recentMs"),
         };
         COLUMN_INFO[HEADER_IDS.averageMs] = {
@@ -683,6 +774,32 @@ function NAP:InitUI()
             textFormatter = TIME_FORMAT,
             textKey = "totalMs",
             tooltip = "Total CPU time spent, within the History Range.",
+            sortMethods = makeSortMethods("totalMs"),
+        };
+        COLUMN_INFO[HEADER_IDS.overallTotalPercent] = {
+            ID = HEADER_IDS.overallTotalPercent,
+            order = counter(),
+            title = "Total %",
+            width = 96,
+            textFormatter = PERCENT_FORMAT,
+            ---@param data NAP_ElementData
+            textFunc = function(data)
+                return data.overallTotalMs > 0 and (data.totalMs / data.overallTotalMs) or 0;
+            end,
+            tooltip = "Percentage of " .. totalAddonsText .. " CPU time spent, within the History Range.",
+            sortMethods = makeSortMethods("totalMs"),
+        };
+        COLUMN_INFO[HEADER_IDS.applicationTotalPercent] = {
+            ID = HEADER_IDS.applicationTotalPercent,
+            order = counter(),
+            title = "Total % of " .. applicationShortText,
+            width = 96,
+            textFormatter = PERCENT_FORMAT,
+            ---@param data NAP_ElementData
+            textFunc = function(data)
+                return data.applicationTotalMs > 0 and (data.totalMs / data.applicationTotalMs) or 0;
+            end,
+            tooltip = "CPU time spent, as a percentage of the total " .. applicationText .. " CPU time. This includes default UI, graphics, etc.",
             sortMethods = makeSortMethods("totalMs"),
         };
         for _, ms in ipairs(msOptions) do
@@ -1159,7 +1276,8 @@ function NAP:InitUI()
                 self:UpdateColumns()
                 for columnText in self.columnPool:EnumerateActive() do
                     local column = columnText.column
-                    columnText:SetText(column.textFormatter(self.data[column.textKey]))
+                    local value = column.textFunc and column.textFunc(self.data) or self.data[column.textKey]
+                    columnText:SetText(column.textFormatter(value))
                 end
             end
         end
@@ -1179,7 +1297,8 @@ function NAP:InitUI()
                 row:UpdateColumns()
                 for columnText in row.columnPool:EnumerateActive() do
                     local column = columnText.column
-                    columnText:SetText(column.textFormatter(data[column.textKey]))
+                    local value = column.textFunc and column.textFunc(data) or data[column.textKey]
+                    columnText:SetText(column.textFormatter(value))
                 end
             end)
 

@@ -47,9 +47,18 @@ end
 
 local TOTAL_ADDON_METRICS_KEY = "\00total\00";
 
-local INFINITE_HISTORY = 0;
-local HISTORY_RANGES = {INFINITE_HISTORY, 5, 15, 30, 60, 120, 300, 600} -- 5sec - 10min
-NAP.curHistoryRange = 30;
+local HISTORY_TYPE_SINCE_RESET = 'sinceReset';
+local HISTORY_TYPE_COMBAT = 'combat';
+local HISTORY_TYPE_ENCOUNTER = 'encounter';
+local HISTORY_TYPE_TIME_RANGE = 'timeRange';
+local HISTORY_LATEST = -1;
+local HISTORY_TIME_RANGES = {5, 15, 30, 60, 120, 300, 600} -- 5sec - 10min
+NAP.currentHistorySelection = {
+    type = HISTORY_TYPE_TIME_RANGE,
+    timeRange = 30,
+    encounterIndex = HISTORY_LATEST,
+    combatIndex = HISTORY_LATEST,
+};
 
 --- @type table<string, table<string, number>> [addonName] = { [metricName] = value }
 NAP.resetBaselineMetrics = {};
@@ -58,31 +67,37 @@ NAP.totalMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
 NAP.loadedAtTick = { [TOTAL_ADDON_METRICS_KEY] = 0 };
 NAP.tickNumber = 0;
 NAP.peakMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
+NAP.combatPeakMs = nil;
+NAP.encounterPeakMs = nil;
 NAP.snapshots = {
     --- @type NAP_Bucket[]
     buckets = {},
+    --- @type NAP_Bucket # reference to the latest bucket
+    lastBucket = nil,
 };
 do
-    --- @class NAP_Bucket
+    --- @type NAP_Bucket
     local lastBucket = {
-        --- @type table<number, number> # tickIndex -> timestamp
         tickMap = {},
-        --- @type table<string, table<number, number>> # addonName -> tickIndex -> ms
         lastTick = {},
         curTickIndex = 0;
     };
     NAP.snapshots.buckets[1] = lastBucket;
     NAP.snapshots.lastBucket = lastBucket;
 end
+--- @type NAP_EncounterSnapshot[]
+NAP.encounterSnapshots = {};
+--- @type NAP_CombatSnapshot[]
+NAP.combatSnapshots = {};
 
 --- collect all available data
-local ACTIVE_MODE = 'active';
+local MODE_ACTIVE = 'active';
 --- collect only total and peak data - disables history range
-local PERFORMANCE_MODE = 'performance';
+local MODE_PERFORMANCE = 'performance';
 --- collect no data at all, just reset the spike ms counters on reset - disables history range, and maybe show different columns?
-local PASSIVE_MODE = 'passive';
+local MODE_PASSIVE = 'passive';
 
---- @type table<string, { title: string, notes: string, loaded: boolean }>
+--- @type table<string, NAP_AddonInfo>
 NAP.addons = {};
 --- @type table<string, boolean> # list of addon names
 NAP.loadedAddons = {};
@@ -112,7 +127,12 @@ function NAP:Init()
         if self[event] then self[event](self, ...); end
     end);
     self.eventFrame:RegisterEvent('ADDON_LOADED');
+    self.eventFrame:RegisterEvent('ENCOUNTER_START');
+    self.eventFrame:RegisterEvent('ENCOUNTER_END');
+    self.eventFrame:RegisterEvent('PLAYER_REGEN_DISABLED');
+    self.eventFrame:RegisterEvent('PLAYER_REGEN_ENABLED');
 
+    self.collectData = true;
     self:StartPurgeTicker();
     SLASH_NUMY_ADDON_PROFILER1 = '/nap';
     SLASH_NUMY_ADDON_PROFILER2 = '/addonprofile';
@@ -136,6 +156,10 @@ function NAP:Init()
             self.OnUpdateActiveMode = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'OnUpdateActiveMode', self.OnUpdateActiveMode);
             self.OnUpdatePerformanceMode = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'OnUpdatePerformanceMode', self.OnUpdatePerformanceMode);
             self.PurgeOldData = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PurgeOldData', self.PurgeOldData);
+            self.ENCOUNTER_START = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'ENCOUNTER_START', self.ENCOUNTER_START);
+            self.ENCOUNTER_END = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'ENCOUNTER_END', self.ENCOUNTER_END);
+            self.PLAYER_REGEN_DISABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_DISABLED', self.PLAYER_REGEN_DISABLED);
+            self.PLAYER_REGEN_ENABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_ENABLED', self.PLAYER_REGEN_ENABLED);
         end
 
         self:SwitchMode(self.db.mode, true);
@@ -198,7 +222,7 @@ function NAP:InitDB()
         end
     end
 
-    self.db.mode = self.db.mode or ACTIVE_MODE;
+    self.db.mode = self.db.mode or MODE_ACTIVE;
 
     self.db.minimap = self.db.minimap or {};
     self.db.minimap.hide = self.db.minimap.hide or false;
@@ -218,7 +242,6 @@ function NAP:ADDON_LOADED(addonName)
     if not self.addons[addonName] then return end
 
     self.loadedAddons[addonName] = true;
-    self.addons[addonName].loaded = true;
     self.totalMs[addonName] = 0;
     self.loadedAtTick[addonName] = self.tickNumber;
     self.peakMs[addonName] = 0;
@@ -230,17 +253,13 @@ function NAP:SwitchMode(newMode, force)
     if newMode == self.db.mode and not force then
         return;
     end
-    local historyDropdown = self.ProfilerFrame.HistoryDropdown;
     self.db.mode = newMode;
-    if newMode == ACTIVE_MODE then
+    if newMode == MODE_ACTIVE then
         self.eventFrame:SetScript('OnUpdate', function() self:OnUpdateActiveMode() end);
-        historyDropdown:Show();
-    elseif newMode == PERFORMANCE_MODE then
+    elseif newMode == MODE_PERFORMANCE then
         self.eventFrame:SetScript('OnUpdate', function() self:OnUpdatePerformanceMode() end);
-        historyDropdown:Hide();
-    elseif newMode == PASSIVE_MODE then
+    elseif newMode == MODE_PASSIVE then
         self.eventFrame:SetScript('OnUpdate', nil);
-        historyDropdown:Hide();
     end
     self:ResetMetrics();
     self.ProfilerFrame:RefreshActiveColumns();
@@ -248,7 +267,9 @@ function NAP:SwitchMode(newMode, force)
     RunNextFrame(function()
         self.ProfilerFrame.Headers:UpdateArrow();
         self.ProfilerFrame:UpdateSortComparator();
-        self.ProfilerFrame:DoUpdate(true);
+        if self.ProfilerFrame:IsShown() then
+            self.ProfilerFrame:DoUpdate(true);
+        end
     end);
 end
 
@@ -294,12 +315,20 @@ function NAP:OnUpdatePerformanceMode()
 
     local totalMs = self.totalMs;
     local peakMs = self.peakMs;
+    local combatPeakMs = self.combatPeakMs;
+    local encounterPeakMs = self.encounterPeakMs;
 
     local overallLastTickMs = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_LastTime);
     if overallLastTickMs > 0 then
         totalMs[TOTAL_ADDON_METRICS_KEY] = totalMs[TOTAL_ADDON_METRICS_KEY] + overallLastTickMs;
         if overallLastTickMs > peakMs[TOTAL_ADDON_METRICS_KEY] then
             peakMs[TOTAL_ADDON_METRICS_KEY] = overallLastTickMs;
+        end
+        if combatPeakMs and overallLastTickMs > (combatPeakMs[TOTAL_ADDON_METRICS_KEY] or 0) then
+            combatPeakMs[TOTAL_ADDON_METRICS_KEY] = overallLastTickMs;
+        end
+        if encounterPeakMs and overallLastTickMs > (encounterPeakMs[TOTAL_ADDON_METRICS_KEY] or 0) then
+            encounterPeakMs[TOTAL_ADDON_METRICS_KEY] = overallLastTickMs;
         end
     end
 
@@ -309,6 +338,12 @@ function NAP:OnUpdatePerformanceMode()
             totalMs[addonName] = totalMs[addonName] + lastTickMs;
             if lastTickMs > peakMs[addonName] then
                 peakMs[addonName] = lastTickMs;
+            end
+            if combatPeakMs and lastTickMs > (combatPeakMs[addonName] or 0) then
+                combatPeakMs[addonName] = lastTickMs;
+            end
+            if encounterPeakMs and lastTickMs > (encounterPeakMs[addonName] or 0) then
+                encounterPeakMs[addonName] = lastTickMs;
             end
         end
     end
@@ -328,7 +363,7 @@ end
 
 local BUCKET_CUTOFF = 2000; -- rather arbitrary number, but interestingly, the lower your fps, the less often actual work will be performed to purge old data ^^
 function NAP:PurgeOldData()
-    if self.db.mode ~= ACTIVE_MODE then -- only active mode uses buckets
+    if self.db.mode ~= MODE_ACTIVE then -- only active mode uses buckets
         return;
     end
     if self.snapshots.lastBucket.curTickIndex > BUCKET_CUTOFF then
@@ -342,7 +377,7 @@ function NAP:PurgeOldData()
     end
 
     local timestamp = GetTime();
-    local cutoff = timestamp - HISTORY_RANGES[#HISTORY_RANGES];
+    local cutoff = timestamp - HISTORY_TIME_RANGES[#HISTORY_TIME_RANGES];
 
     if firstBucket.tickMap[1] > cutoff then
         return;
@@ -361,14 +396,70 @@ function NAP:PurgeOldData()
     end
 end
 
+function NAP:PLAYER_REGEN_DISABLED()
+    self:StopPurgeTicker();
+
+    if self.db.mode == MODE_PERFORMANCE then
+        self.combatPeakMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
+    end
+    self.combatSnapshots = {
+        { -- might add a list of combat snapshots in the future, for now it's just 1
+            snapshot = self:InitNewSnapshot(self.combatPeakMs),
+        },
+    };
+end
+
+function NAP:PLAYER_REGEN_ENABLED()
+    self:StartPurgeTicker();
+
+    local snapshot = self.combatSnapshots[#self.combatSnapshots];
+    if not snapshot then
+        print('NumyAddonProfiler: combat ended without matching combat start');
+        return;
+    end
+    self:CloseSnapshot(snapshot.snapshot);
+    self.combatPeakMs = nil
+end
+
+function NAP:ENCOUNTER_START(encounterID, encounterName, difficultyID, _)
+    if (select(2, GetDifficultyInfo(difficultyID)) ~= 'raid') then return; end
+    if self.db.mode == MODE_PERFORMANCE then
+        self.encounterPeakMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
+    end
+    local snapshot = {
+        encounterID = encounterID,
+        name = encounterName,
+        snapshot = self:InitNewSnapshot(self.encounterPeakMs),
+    };
+    t_insert(self.encounterSnapshots, snapshot);
+end
+
+function NAP:ENCOUNTER_END(encounterID, _, difficultyID, _, success)
+    if (select(2, GetDifficultyInfo(difficultyID)) ~= 'raid') then return; end
+    local snapshot = self.encounterSnapshots[#self.encounterSnapshots];
+    if not snapshot or snapshot.encounterID ~= encounterID then
+        print('NumyAddonProfiler: encounter ended without matching encounter start');
+        return;
+    end
+    snapshot.kill = success == 1;
+
+    self:CloseSnapshot(snapshot.snapshot);
+    self.encounterPeakMs = nil;
+end
+
 function NAP:StartPurgeTicker()
     if self.purgerTicker then
         self.purgerTicker:Cancel()
     end
-
-    self.collectData = true;
     -- continiously purge older entires
     self.purgerTicker = C_Timer.NewTicker(5, function() self:PurgeOldData() end)
+end
+
+function NAP:StopPurgeTicker()
+    if self.purgerTicker then
+        self.purgerTicker:Cancel()
+        self.purgerTicker = nil
+    end
 end
 
 function NAP:ResetMetrics()
@@ -384,6 +475,76 @@ function NAP:ResetMetrics()
     end
     self.totalMs[TOTAL_ADDON_METRICS_KEY] = 0;
     self.peakMs[TOTAL_ADDON_METRICS_KEY] = 0;
+end
+
+--- @param peakMsTable nil|table<string, number>
+--- @return NAP_PartialSnapshot
+function NAP:InitNewSnapshot(peakMsTable)
+    return {
+        startMetrics = self:GetCurrentMsSpikeMetrics(),
+        startTime = GetTime(),
+        startTick = self.tickNumber,
+        startTotal = self.db.mode ~= MODE_PASSIVE and CopyTable(self.totalMs) or {},
+        peakTime = peakMsTable,
+        bucketStartTick = self.snapshots.lastBucket.curTickIndex,
+        isComplete = false,
+    };
+end
+
+--- @param snapshot NAP_PartialSnapshot
+function NAP:CloseSnapshot(snapshot)
+    --- @type NAP_Snapshot
+    snapshot = snapshot; ---@diagnostic disable-line: assign-type-mismatch
+    snapshot.endMetrics = self:GetCurrentMsSpikeMetrics();
+    snapshot.endTime = GetTime();
+    snapshot.endTick = self.tickNumber;
+
+    snapshot.bossAvg = self:GetCurrentMetrics(Enum_AddOnProfilerMetric_EncounterAverageTime);
+    snapshot.recentAvg = self:GetCurrentMetrics(Enum_AddOnProfilerMetric_RecentAverageTime);
+
+    if self.db.mode ~= MODE_PASSIVE then
+        snapshot.total = {};
+        for addonName, endTotal in pairs(self.totalMs) do
+            snapshot.total[addonName] = endTotal - (snapshot.startTotal[addonName] or 0);
+        end
+    end
+    snapshot.startTotal = nil;
+
+    if self.db.mode == MODE_ACTIVE then
+        snapshot.peakTime = {};
+        local bucket = {
+            lastTick = {},
+            tickMap = {},
+            curTickIndex = 0,
+        };
+        local lastBucket = self.snapshots.lastBucket;
+        for index = snapshot.bucketStartTick, lastBucket.curTickIndex do
+            local tickIndex = bucket.curTickIndex + 1;
+            bucket.curTickIndex = tickIndex;
+            bucket.tickMap[tickIndex] = lastBucket.tickMap[index];
+        end
+        for addonName, lastTicks in pairs(lastBucket.lastTick) do
+            snapshot.peakTime[addonName] = 0;
+            local newTicks = {};
+            local tickIndex = 0;
+            for index = snapshot.bucketStartTick, lastBucket.curTickIndex do
+                tickIndex = tickIndex + 1;
+                local lastTick = lastTicks[index];
+                if lastTick then
+                    newTicks[tickIndex] = lastTicks[index];
+                    if lastTicks[index] > snapshot.peakTime[addonName] then
+                        snapshot.peakTime[addonName] = lastTicks[index];
+                    end
+                end
+            end
+            bucket.lastTick[addonName] = newTicks;
+        end
+        snapshot.bucket = bucket;
+    else
+        snapshot.peakTime = snapshot.peakTime or self:GetCurrentMetrics(Enum_AddOnProfilerMetric_PeakTime);
+    end
+
+    snapshot.isComplete = true;
 end
 
 function NAP:GetCurrentMsSpikeMetrics(onlyForAddonName)
@@ -414,46 +575,63 @@ function NAP:GetCurrentMsSpikeMetrics(onlyForAddonName)
     return currentMetrics;
 end
 
-function NAP:GetActiveHistoryRange()
-    return (self.db.mode == ACTIVE_MODE and self.curHistoryRange) or INFINITE_HISTORY;
+--- @param metric any # Enum.AddOnProfilerMetric
+--- @return table<string, number> # addonName -> metricValue
+function NAP:GetCurrentMetrics(metric)
+    local currentMetrics = {};
+    currentMetrics[TOTAL_ADDON_METRICS_KEY] = C_AddOnProfiler_GetOverallMetric(metric);
+    for addonName in pairs(self.loadedAddons) do
+        currentMetrics[addonName] = C_AddOnProfiler_GetAddOnMetric(addonName, metric);
+    end
+
+    return currentMetrics;
 end
 
----@class NAP_ElementData
----@field addonName string
----@field addonTitle string
----@field addonNotes string
----@field peakTime number
----@field overallPeakTime number
----@field encounterAvg number
----@field overallEncounterAvg number
----@field recentMs number
----@field overallRecentMs number
----@field averageMs number
----@field totalMs number
----@field overallTotalMs number
----@field applicationTotalMs number
----@field numberOfTicks number
----@field over1Ms number
----@field over5Ms number
----@field over10Ms number
----@field over50Ms number
----@field over100Ms number
----@field over500Ms number
----@field over1000Ms number
----@field overMsSum number
--- 11.1 will likely allow adding applicationPeakTime, applicationEncounterAvg, applicationRecentMs
+--- @return string historyType
+--- @return number|nil historyIndex # combatIndex, encounterIndex, or timeRange
+function NAP:GetActiveHistoryRange()
+    local type = self.currentHistorySelection.type;
+    if HISTORY_TYPE_TIME_RANGE == type and self.db.mode ~= MODE_ACTIVE then
+        type = HISTORY_TYPE_SINCE_RESET;
+    end
+
+    if HISTORY_TYPE_SINCE_RESET == type then
+        return HISTORY_TYPE_SINCE_RESET, nil;
+    elseif HISTORY_TYPE_COMBAT == type then
+        return HISTORY_TYPE_COMBAT, self.currentHistorySelection.combatIndex;
+    elseif HISTORY_TYPE_ENCOUNTER == type then
+        return HISTORY_TYPE_ENCOUNTER, self.currentHistorySelection.encounterIndex;
+    end
+
+    -- if something went wrong, default to time range
+    return HISTORY_TYPE_TIME_RANGE, self.currentHistorySelection.timeRange;
+end
 
 --- @param forceUpdate boolean
 --- @return table<NAP_Bucket, number>? bucketsWithinHistory
 function NAP:PrepareFilteredData(forceUpdate)
     local now = self.frozenAt or GetTime();
 
-    local minTimestamp = now - self:GetActiveHistoryRange();
+    local historyType, historyIndex = self:GetActiveHistoryRange();
+    local timestampOffset = 0;
+    if historyType == HISTORY_TYPE_TIME_RANGE and historyIndex then
+        timestampOffset = historyIndex;
+    end
+
+    local minTimestamp = now - timestampOffset;
 
     local prevTimestamp = self.minTimeStamp;
     local prevMatch = self.prevMatch;
+    local prevHistoryType = self.prevHistoryType;
+    local prevHistoryIndex = self.prevHistoryIndex;
 
-    if not forceUpdate and prevTimestamp == minTimestamp and prevMatch == self.curMatch then
+    if
+        not forceUpdate
+        and prevTimestamp == minTimestamp
+        and prevMatch == self.curMatch
+        and prevHistoryType == historyType
+        and prevHistoryIndex == historyIndex
+    then
         return nil;
     end
 
@@ -461,9 +639,11 @@ function NAP:PrepareFilteredData(forceUpdate)
     self.dataProvider = nil;
     self.minTimeStamp = minTimestamp;
     self.prevMatch = self.curMatch;
+    self.prevHistoryType = historyType;
+    self.prevHistoryIndex = historyIndex;
 
     local withinHistory = {};
-    if INFINITE_HISTORY ~= self:GetActiveHistoryRange() then
+    if HISTORY_TYPE_TIME_RANGE == historyType then
         for _, bucket in ipairs(self.snapshots.buckets) do
             if bucket.tickMap and bucket.tickMap[bucket.curTickIndex] and bucket.tickMap[bucket.curTickIndex] > minTimestamp then
                 for tickIndex, timestamp in pairs(bucket.tickMap) do
@@ -475,12 +655,58 @@ function NAP:PrepareFilteredData(forceUpdate)
             end
         end
     end
-    local overallStats = self:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory);
+    local snapshot = nil;
+    if HISTORY_TYPE_COMBAT == historyType then
+        local index = historyIndex;
+        if index == HISTORY_LATEST then
+            index = #self.combatSnapshots;
+        end
+        snapshot = self.combatSnapshots[index] and self.combatSnapshots[index].snapshot;
+    elseif HISTORY_TYPE_ENCOUNTER == historyType then
+        local index = historyIndex;
+        if index == HISTORY_LATEST then
+            index = #self.encounterSnapshots;
+        end
+        snapshot = self.encounterSnapshots[index] and self.encounterSnapshots[index].snapshot;
+    end
+    if snapshot and not snapshot.isComplete then
+        snapshot = nil;
+    end
+    if snapshot and snapshot.bucket then
+        withinHistory[snapshot.bucket] = 1;
+    end
+    local overallSnapshotOverrides;
+    if snapshot then
+        overallSnapshotOverrides = {
+            encounterAvg = snapshot.bossAvg[TOTAL_ADDON_METRICS_KEY] or 0,
+            recentMs = snapshot.recentAvg[TOTAL_ADDON_METRICS_KEY] or 0,
+            peakTime = snapshot.peakTime[TOTAL_ADDON_METRICS_KEY] or 0,
+            totalMs = snapshot.total[TOTAL_ADDON_METRICS_KEY] or 0,
+            numberOfTicks = snapshot.endTick - snapshot.startTick,
+            applicationTotalMs = (snapshot.endTime - snapshot.startTime) * 1000,
+            startMetrics = snapshot.startMetrics[TOTAL_ADDON_METRICS_KEY] or {},
+            endMetrics = snapshot.endMetrics[TOTAL_ADDON_METRICS_KEY] or {},
+        };
+    end
+    local overallStats = self:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory, nil, overallSnapshotOverrides);
 
     for addonName in pairs(self.loadedAddons) do
         local info = self.addons[addonName];
         if info.title:lower():match(self.curMatch) then
-            t_insert(self.filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats));
+            local snapshotOverrides;
+            if snapshot then
+                snapshotOverrides = {
+                    encounterAvg = snapshot.bossAvg[addonName] or 0,
+                    recentMs = snapshot.recentAvg[addonName] or 0,
+                    peakTime = snapshot.peakTime[addonName] or 0,
+                    totalMs = snapshot.total[addonName] or 0,
+                    numberOfTicks = overallSnapshotOverrides and overallSnapshotOverrides.numberOfTicks or 0,
+                    applicationTotalMs = overallSnapshotOverrides and overallSnapshotOverrides.applicationTotalMs or 0,
+                    startMetrics = snapshot.startMetrics[addonName] or {},
+                    endMetrics = snapshot.endMetrics[addonName] or {},
+                };
+            end
+            t_insert(self.filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
         end
     end
 
@@ -489,17 +715,18 @@ function NAP:PrepareFilteredData(forceUpdate)
         self.dataProvider:SetSortComparator(self.sortComparator)
     end
 
-    return withinHistory;
+    return withinHistory, overallSnapshotOverrides;
 end
 
----@param addonName string
----@param info nil|{ title: string, notes: string, loaded: boolean }
----@param bucketsWithinHistory table<NAP_Bucket, number>
----@param overallStats NAP_ElementData?
----@return NAP_ElementData
-function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, overallStats)
-    ---@type NAP_ElementData
-    ---@diagnostic disable-next-line: missing-fields
+--- @param addonName string
+--- @param info NAP_AddonInfo?
+--- @param bucketsWithinHistory table<NAP_Bucket, number>
+--- @param overallStats NAP_ElementData?
+--- @param snapshotOverrides nil|{ encounterAvg: number, recentMs: number, peakTime: number, totalMs: number, numberOfTicks: number, applicationTotalMs: number, startMetrics: table<string, number>, endMetrics: table<string, number> }
+--- @return NAP_ElementData
+function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, overallStats, snapshotOverrides)
+    --- @type NAP_ElementData
+    --- @diagnostic disable-next-line: missing-fields
     local data = {
         addonName = addonName,
         addonTitle = info and info.title or '',
@@ -511,28 +738,34 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
         applicationTotalMs = 0,
     };
     if TOTAL_ADDON_METRICS_KEY == addonName then
-        data.encounterAvg = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_EncounterAverageTime);
-        data.recentMs = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_RecentAverageTime);
+        data.encounterAvg = snapshotOverrides and snapshotOverrides.encounterAvg or C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_EncounterAverageTime);
+        data.recentMs = snapshotOverrides and snapshotOverrides.recentMs or C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_RecentAverageTime);
     else
-        data.encounterAvg = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_EncounterAverageTime);
-        data.recentMs = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_RecentAverageTime);
+        data.encounterAvg = snapshotOverrides and snapshotOverrides.encounterAvg or C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_EncounterAverageTime);
+        data.recentMs = snapshotOverrides and snapshotOverrides.recentMs or C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_RecentAverageTime);
     end
     for _, ms in pairs(msOptions) do
         data[msOptionFieldMap[ms]] = 0;
     end
     local now = self.frozenAt or GetTime();
-    if INFINITE_HISTORY == self:GetActiveHistoryRange() then
-        data.applicationTotalMs = (now - self.resetTime) * 1000;
-        local currentMetrics = self.frozenMetrics and self.frozenMetrics[addonName] or self:GetCurrentMsSpikeMetrics(addonName);
+    local historyType = self:GetActiveHistoryRange();
+    if
+        HISTORY_TYPE_SINCE_RESET == historyType
+        or HISTORY_TYPE_ENCOUNTER == historyType
+        or HISTORY_TYPE_COMBAT == historyType
+    then
+        data.applicationTotalMs = (snapshotOverrides and snapshotOverrides.applicationTotalMs) or (now - self.resetTime) * 1000;
+        local currentMetrics = (snapshotOverrides and snapshotOverrides.endMetrics) or (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName);
+        local baselineMetrics = (snapshotOverrides and snapshotOverrides.startMetrics) or self.resetBaselineMetrics[addonName];
         for ms in pairs(msMetricMap) do
             local currentMetric = currentMetrics[ms] or 0;
-            local baselineMetric = self.resetBaselineMetrics[addonName][ms] or 0;
-            local adjustedValue = currentMetric - baselineMetric;
-            data[msOptionFieldMap[ms]] = adjustedValue;
+            local baselineMetric = baselineMetrics[ms] or 0;
+            local increase = currentMetric - baselineMetric;
+            data[msOptionFieldMap[ms]] = increase;
         end
-        data.peakTime = self.peakMs[addonName];
-        data.totalMs = self.totalMs[addonName];
-        data.numberOfTicks = self.tickNumber - self.loadedAtTick[addonName];
+        data.peakTime = snapshotOverrides and snapshotOverrides.peakTime or self.peakMs[addonName];
+        data.totalMs = (snapshotOverrides and snapshotOverrides.totalMs) or self.totalMs[addonName];
+        data.numberOfTicks = (snapshotOverrides and snapshotOverrides.numberOfTicks) or (self.tickNumber - self.loadedAtTick[addonName]);
     else
         local firstTickTime = now;
         local lastTickTime = 0;
@@ -581,11 +814,11 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
     end
     data.averageMs = data.numberOfTicks > 0 and (data.totalMs / data.numberOfTicks) or 0; -- let's not divide by 0 :)
 
-    if self.db.mode == PASSIVE_MODE then
+    if self.db.mode == MODE_PASSIVE then
         if TOTAL_ADDON_METRICS_KEY == addonName then
-            data.peakTime = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_PeakTime);
+            data.peakTime = (snapshotOverrides and snapshotOverrides.peakTime) or C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_PeakTime);
         else
-            data.peakTime = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_PeakTime);
+            data.peakTime = (snapshotOverrides and snapshotOverrides.peakTime) or C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_PeakTime);
         end
     end
 
@@ -626,9 +859,9 @@ function NAP:InitUI()
     local greyColorFormat = "|cff808080%s|r";
     local whiteColorFormat = "|cfff8f8f2%s|r";
 
-    local TIME_FORMAT = function(val) return (val > 0 and whiteColorFormat or greyColorFormat):format(("%.3f"):format(val)) .. msText; end;
-    local ROUND_TIME_FORMAT = function(val) return (val > 0 and whiteColorFormat or greyColorFormat):format(val) .. msText; end;
-    local COUNTER_FORMAT = function(val) return (val > 0 and whiteColorFormat or greyColorFormat):format(val) .. xText; end;
+    local TIME_FORMAT = function(val) return (val > 0.0005 and whiteColorFormat or greyColorFormat):format(("%.3f"):format(val)) .. msText; end;
+    local ROUND_TIME_FORMAT = function(val) return (val > 0.0005 and whiteColorFormat or greyColorFormat):format(val) .. msText; end;
+    local COUNTER_FORMAT = function(val) return (val > 0.0005 and whiteColorFormat or greyColorFormat):format(val) .. xText; end;
     local RAW_FORMAT = function(val) return val; end;
     local PERCENT_FORMAT = function(val)
         local color = val > 0.00005 and whiteColorFormat or greyColorFormat;
@@ -645,13 +878,13 @@ function NAP:InitUI()
         local Inf = math.huge
         local function makeSortMethods(key)
             return {
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
+                --- @param a NAP_ElementData
+                --- @param b NAP_ElementData
                 [ORDER_ASC] = function(a, b)
                     return (a[key] ~= Inf and a[key] < b[key]) or (a[key] == b[key] and a.addonName < b.addonName);
                 end,
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
+                --- @param a NAP_ElementData
+                --- @param b NAP_ElementData
                 [ORDER_DESC] = function(a, b)
                     return (a[key] ~= Inf and a[key] > b[key]) or (a[key] == b[key] and a.addonName < b.addonName);
                 end,
@@ -669,13 +902,13 @@ function NAP:InitUI()
             textFormatter = RAW_FORMAT,
             textKey = "addonTitle",
             sortMethods = {
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
+                --- @param a NAP_ElementData
+                --- @param b NAP_ElementData
                 [ORDER_ASC] = function(a, b)
                     return strcmputf8i(StripHyperlinks(a.addonTitle), StripHyperlinks(b.addonTitle)) > 0
                 end,
-                ---@param a NAP_ElementData
-                ---@param b NAP_ElementData
+                --- @param a NAP_ElementData
+                --- @param b NAP_ElementData
                 [ORDER_DESC] = function(a, b)
                     return strcmputf8i(StripHyperlinks(a.addonTitle), StripHyperlinks(b.addonTitle)) < 0
                 end,
@@ -689,7 +922,7 @@ function NAP:InitUI()
             width = 96,
             textFormatter = TIME_FORMAT,
             textKey = "encounterAvg",
-            tooltip = "Average CPU time spent per frame during a boss encounter. Ignores the History Range.",
+            tooltip = "Average CPU time spent per frame during a boss encounter. Time based History Ranges will display the current values.",
             sortMethods = makeSortMethods("encounterAvg"),
         };
         COLUMN_INFO[HEADER_IDS.overallEncounterAvgPercent] = {
@@ -699,11 +932,11 @@ function NAP:InitUI()
             title = "Boss Avg %",
             width = 96,
             textFormatter = PERCENT_FORMAT,
-            ---@param data NAP_ElementData
+            --- @param data NAP_ElementData
             textFunc = function(data)
                 return data.overallEncounterAvg > 0 and (data.encounterAvg / data.overallEncounterAvg) or 0;
             end,
-            tooltip = "Percentage of " .. totalAddonsText .. " CPU time spent per frame during a boss encounter. Ignores the History Range.",
+            tooltip = "Percentage of " .. totalAddonsText .. " CPU time spent per frame during a boss encounter. Time based History Ranges will display the current values.",
             sortMethods = makeSortMethods("encounterAvg"),
         };
         COLUMN_INFO[HEADER_IDS.peakTimeMs] = {
@@ -724,7 +957,7 @@ function NAP:InitUI()
             title = "Peak %",
             width = 96,
             textFormatter = PERCENT_FORMAT,
-            ---@param data NAP_ElementData
+            --- @param data NAP_ElementData
             textFunc = function(data)
                 return data.overallPeakTime > 0 and (data.peakTime / data.overallPeakTime) or 0;
             end,
@@ -749,7 +982,7 @@ function NAP:InitUI()
             title = "Recent %",
             width = 96,
             textFormatter = PERCENT_FORMAT,
-            ---@param data NAP_ElementData
+            --- @param data NAP_ElementData
             textFunc = function(data)
                 return data.overallRecentMs > 0 and (data.recentMs / data.overallRecentMs) or 0;
             end,
@@ -782,7 +1015,7 @@ function NAP:InitUI()
             title = "Total %",
             width = 96,
             textFormatter = PERCENT_FORMAT,
-            ---@param data NAP_ElementData
+            --- @param data NAP_ElementData
             textFunc = function(data)
                 return data.overallTotalMs > 0 and (data.totalMs / data.overallTotalMs) or 0;
             end,
@@ -795,7 +1028,7 @@ function NAP:InitUI()
             title = "Total % of " .. applicationShortText,
             width = 96,
             textFormatter = PERCENT_FORMAT,
-            ---@param data NAP_ElementData
+            --- @param data NAP_ElementData
             textFunc = function(data)
                 return data.applicationTotalMs > 0 and (data.totalMs / data.applicationTotalMs) or 0;
             end,
@@ -849,7 +1082,7 @@ function NAP:InitUI()
                 end
                 function display:GetActiveSort()
                     local sort, order = activeSort, activeOrder
-                    if NAP.db.mode == PASSIVE_MODE and not COLUMN_INFO[sort].availableInPassiveMode then
+                    if NAP.db.mode == MODE_PASSIVE and not COLUMN_INFO[sort].availableInPassiveMode then
                         sort = HEADER_IDS.spikeSumMs
                     end
 
@@ -874,8 +1107,8 @@ function NAP:InitUI()
             end
 
             function display:DoUpdate(force)
-                local bucketsWithinHistory = NAP:PrepareFilteredData(force)
-                self.TotalRow:Update(bucketsWithinHistory)
+                local bucketsWithinHistory, overallSnapshotOverrides = NAP:PrepareFilteredData(force)
+                self.TotalRow:Update(bucketsWithinHistory, overallSnapshotOverrides)
 
                 local perc = self.ScrollBox:GetScrollPercentage()
                 self.ScrollBox:Flush()
@@ -891,7 +1124,7 @@ function NAP:InitUI()
             end
 
             function display:OnShow()
-                self.elapsed = UPDATE_INTERVAL
+                self:DoUpdate()
 
                 if continuousUpdate then
                     self:SetScript("OnUpdate", self.OnUpdate)
@@ -905,7 +1138,7 @@ function NAP:InitUI()
             function display:RefreshActiveColumns()
                 display.activeColumns = {}
                 for ID, info in pairs(COLUMN_INFO) do
-                    if NAP.db.shownColumns[ID] and (NAP.db.mode ~= PASSIVE_MODE or info.availableInPassiveMode) then
+                    if NAP.db.shownColumns[ID] and (NAP.db.mode ~= MODE_PASSIVE or info.availableInPassiveMode) then
                         t_insert(display.activeColumns, info)
                     end
                 end
@@ -991,29 +1224,82 @@ function NAP:InitUI()
         end
 
         local historyMenu = CreateFrame("DropdownButton", nil, display, "WowStyle1DropdownTemplate");
-        display.HistoryDropdown = historyMenu
+        display.HistoryDropdown = historyMenu;
         do
             historyMenu:SetPoint("TOPRIGHT", -11, -32);
             historyMenu:SetWidth(150);
             historyMenu:SetFrameLevel(3);
             historyMenu:OverrideText("History Range");
-            local historyOptions = {};
-            for _, range in ipairs(HISTORY_RANGES) do
-                local text = SecondsToTime(range, false, true);
-                if range == 0 then
-                    text = "Since Reset/Reload";
-                end
-                t_insert(historyOptions, {text, range});
-            end
-            local function isSelected(data)
-                return data == self.curHistoryRange;
-            end
-            local function onSelection(data)
-                self.curHistoryRange = data;
 
+            local function onAfterSelection()
                 display.elapsed = UPDATE_INTERVAL
             end
-            MenuUtil.CreateRadioMenu(historyMenu, isSelected, onSelection, unpack(historyOptions));
+            local function isTypeSelected(data)
+                return data == NAP:GetActiveHistoryRange();
+            end
+            local function selectType(data)
+                NAP.currentHistorySelection.type = data;
+                onAfterSelection();
+
+                return MenuResponse.Refresh;
+            end
+            local function isTimeRangeSelected(data)
+                return NAP.currentHistorySelection.timeRange == data;
+            end
+            local function selectTimeRange(data)
+                NAP.currentHistorySelection.type = HISTORY_TYPE_TIME_RANGE;
+                NAP.currentHistorySelection.timeRange = data;
+                onAfterSelection();
+
+                return MenuResponse.Refresh;
+            end
+            local function isEncounterSelected(data)
+                local selectedIndex = NAP.currentHistorySelection.encounterIndex;
+
+                return data.index == selectedIndex or (selectedIndex == HISTORY_LATEST and data.isLatest or false);
+            end
+            local function selectEncounter(data)
+                NAP.currentHistorySelection.type = HISTORY_TYPE_ENCOUNTER;
+                NAP.currentHistorySelection.encounterIndex = data.index;
+                onAfterSelection();
+
+                return MenuResponse.Refresh;
+            end
+
+            --- @param rootDescription RootMenuDescriptionProxy
+            historyMenu:SetupMenu(function(_, rootDescription)
+                rootDescription:CreateTitle("Select History Range");
+
+                local sinceReset = rootDescription:CreateRadio("Since Reset", isTypeSelected, selectType, HISTORY_TYPE_SINCE_RESET);
+                sinceReset:SetTitleAndTextTooltip("Since Reset/Reload", "Show all information since the last reset.");
+
+                local timeRangeTypeAllowed = NAP.db.mode == MODE_ACTIVE;
+                local timeRange = rootDescription:CreateRadio("Last X Seconds", isTypeSelected, selectType, HISTORY_TYPE_TIME_RANGE);
+                timeRange:SetEnabled(timeRangeTypeAllowed);
+                if timeRangeTypeAllowed then
+                    timeRange:SetTitleAndTextTooltip("Last X Seconds", "Only available in Active Mode");
+                end
+                for _, range in ipairs(HISTORY_TIME_RANGES) do
+                    local option = timeRange:CreateRadio(SecondsToTime(range, false, true), isTimeRangeSelected, selectTimeRange, range);
+                    option:SetEnabled(timeRangeTypeAllowed);
+                end
+
+                local encounter = rootDescription:CreateRadio("Raid Encounters", isTypeSelected, selectType, HISTORY_TYPE_ENCOUNTER);
+                encounter:SetTitleAndTextTooltip("Raid Encounters", "Show addon performance during a raid fight.");
+                local latestIndex = #NAP.encounterSnapshots;
+                if NAP.encounterSnapshots[latestIndex] and not NAP.encounterSnapshots[latestIndex].snapshot.isComplete then -- encounter is still in progress
+                    latestIndex = latestIndex - 1;
+                end
+                encounter:CreateRadio("Last Encounter", isEncounterSelected, selectEncounter, { index = HISTORY_LATEST, isLatest = true });
+                for index, encounterData in ipairs(NAP.encounterSnapshots) do
+                    if encounterData.snapshot.isComplete then
+                        local text = string.format("%d - %s (%s)", index, encounterData.name, encounterData.kill and "Kill" or "Wipe");
+                        encounter:CreateRadio(text, isEncounterSelected, selectEncounter, { index = index, isLatest = index == latestIndex });
+                    end
+                end
+
+                rootDescription:CreateRadio("Last Combat", isTypeSelected, selectType, HISTORY_TYPE_COMBAT);
+            end)
         end
 
         local search = CreateFrame("EditBox", "$parentSearchBox", display, "SearchBoxTemplate")
@@ -1047,9 +1333,9 @@ function NAP:InitUI()
                 end
 
                 rootDescription:CreateTitle("Mode")
-                local active = rootDescription:CreateRadio("Active Mode", isSelected, onSelection, ACTIVE_MODE)
-                local performance = rootDescription:CreateRadio("Performance Mode", isSelected, onSelection, PERFORMANCE_MODE)
-                local passive = rootDescription:CreateRadio("Passive Mode", isSelected, onSelection, PASSIVE_MODE)
+                local active = rootDescription:CreateRadio("Active Mode", isSelected, onSelection, MODE_ACTIVE)
+                local performance = rootDescription:CreateRadio("Performance Mode", isSelected, onSelection, MODE_PERFORMANCE)
+                local passive = rootDescription:CreateRadio("Passive Mode", isSelected, onSelection, MODE_PASSIVE)
 
                 active:SetTitleAndTextTooltip("Active Mode", "Provides the most amount of information, and allows you to select a History Range to filter by.")
                 performance:SetTitleAndTextTooltip("Performance Mode", "Performs slightly less work in the background, but does not allow you to select a History Range.")
@@ -1101,7 +1387,7 @@ function NAP:InitUI()
                 elseif button == "RightButton" then
                     local headerOptions = {}
                     for ID, info in pairs(COLUMN_INFO) do
-                        if ID ~= "addonTitle" and (NAP.db.mode ~= PASSIVE_MODE or info.availableInPassiveMode) then
+                        if ID ~= "addonTitle" and (NAP.db.mode ~= MODE_PASSIVE or info.availableInPassiveMode) then
                             t_insert(headerOptions, { info.title, info })
                         end
                     end
@@ -1269,9 +1555,9 @@ function NAP:InitUI()
                 return self.data
             end
 
-            function totalRow:Update(bucketsWithinHistory)
+            function totalRow:Update(bucketsWithinHistory, overallSnapshotOverrides)
                 if bucketsWithinHistory then
-                    self.data = NAP:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, { title = "|cnNORMAL_FONT_COLOR:Addon Total|r", loaded = true, notes = "Stats for all addons combined" }, bucketsWithinHistory)
+                    self.data = NAP:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, { title = "|cnNORMAL_FONT_COLOR:Addon Total|r", notes = "Stats for all addons combined" }, bucketsWithinHistory, nil, overallSnapshotOverrides)
                 end
                 self:UpdateColumns()
                 for columnText in self.columnPool:EnumerateActive() do
@@ -1508,6 +1794,7 @@ function NAP:EnableLogging()
     DynamicResizeButton_Resize(self.ToggleButton)
 
     self.eventFrame:Show()
+    self.collectData = true;
     self:StartPurgeTicker()
 
     self.ProfilerFrame.ScrollBox:Flush()
@@ -1532,7 +1819,7 @@ function NAP:ToggleFrame()
 end
 
 function NAP:RegisterIntoBlizzMove()
-    ---@type BlizzMoveAPI?
+    --- @type BlizzMoveAPI?
     local BlizzMoveAPI = BlizzMoveAPI;
     if BlizzMoveAPI then
         BlizzMoveAPI:RegisterAddOnFrames(

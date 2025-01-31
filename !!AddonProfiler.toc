@@ -8,6 +8,14 @@
 ## OptionalDeps: !BugGrabber
 ## X-Curse-Project-ID: 1163936
 ## X-Wago-ID: XKq9nlKy
+## Category: Development Tools
+## Category-deDE: Entwicklungstools
+## Category-esES: Herramientas de Desarrollo
+## Category-esMX: Herramientas de Desarrollo
+## Category-frFR: Outils de Développement
+## Category-ptBR: Ferramentas de Desenvolvimento
+## Category-ruRU: Инструменты разработки
+## Category-zhCN: 开发工具
 
 libs\embeds.xml
 AddonProfiler.lua

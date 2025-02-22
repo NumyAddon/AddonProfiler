@@ -139,17 +139,7 @@ function NAP:Init()
     SLASH_NUMY_ADDON_PROFILER3 = '/addonprofiler';
     SLASH_NUMY_ADDON_PROFILER4 = '/addoncpu';
     SlashCmdList['NUMY_ADDON_PROFILER'] = function(message)
-        if message == 'reset' then
-            wipe(self.db.minimap);
-            self.db.minimap.hide = false;
-
-            local name = 'NumyAddonProfiler';
-            LibStub('LibDBIcon-1.0'):Hide(name);
-            LibStub('LibDBIcon-1.0'):Show(name);
-
-            return;
-        end
-        self:ToggleFrame();
+        self:SlashCommand(message);
     end;
     RunNextFrame(function()
         if NumyProfiler then -- the irony of profiling the profiler (-:
@@ -164,6 +154,67 @@ function NAP:Init()
 
         self:SwitchMode(self.db.mode, true);
     end);
+end
+
+function NAP:Print(...)
+    print('|cff33ff99NumyAddonProfiler|r:', ...);
+end
+
+--- @param message string
+function NAP:SlashCommand(message)
+    message = message:trim():lower();
+    if message == '' or message == 'ui' then
+        self:ToggleFrame();
+    elseif message == 'disable' then
+        self:DisableLogging();
+        self:Print('Logging has been disabled.')
+    elseif message == 'enable' then
+        self:EnableLogging();
+        self:Print('Logging has been enabled.')
+    elseif message == 'toggle' then
+        if self:IsLogging() then
+            self:DisableLogging();
+            self:Print('Logging has been disabled.')
+        else
+            self:EnableLogging();
+            self:Print('Logging has been enabled.')
+        end
+    elseif message == 'reset' then
+        self:ResetMetrics();
+        if self.ProfilerFrame then
+            self.ProfilerFrame.elapsed = 60;
+        end
+        self:Print('All collected data has been reset.');
+    elseif message == 'active' then
+        self:SwitchMode(MODE_ACTIVE);
+        self:Print('Switched to active mode.');
+    elseif message == 'performance' then
+        self:SwitchMode(MODE_PERFORMANCE);
+        self:Print('Switched to performance mode.');
+    elseif message == 'passive' then
+        self:SwitchMode(MODE_PASSIVE);
+        self:Print('Switched to passive mode.');
+    elseif message == 'minimap' then
+        wipe(self.db.minimap);
+        self.db.minimap.hide = false;
+        local name = 'NumyAddonProfiler';
+        LibStub('LibDBIcon-1.0'):Hide(name);
+        LibStub('LibDBIcon-1.0'):Show(name);
+
+        self:Print('Minimap button has been restored.');
+    else
+        self:Print('Commands:');
+        print('  help - show this help message');
+        print('  ui (or nothing) - toggle the profiler frame');
+        print('  disable - disable the profiler');
+        print('  enable - enable the profiler');
+        print('  toggle - disable / enable the profiler')
+        print('  reset - reset all collected data');
+        print('  active - switch to active mode');
+        print('  performance - switch to performance mode');
+        print('  passive - switch to passive mode');
+        print('  minimap - reset the minimap button');
+    end
 end
 
 local HEADER_IDS = {
@@ -414,7 +465,7 @@ function NAP:PLAYER_REGEN_ENABLED()
 
     local snapshot = self.combatSnapshots[#self.combatSnapshots];
     if not snapshot then
-        print('NumyAddonProfiler: combat ended without matching combat start');
+        self:Print('Combat ended without matching combat start');
         return;
     end
     self:CloseSnapshot(snapshot.snapshot);
@@ -438,7 +489,7 @@ function NAP:ENCOUNTER_END(encounterID, _, difficultyID, _, success)
     if (select(2, GetDifficultyInfo(difficultyID)) ~= 'raid') then return; end
     local snapshot = self.encounterSnapshots[#self.encounterSnapshots];
     if not snapshot or snapshot.encounterID ~= encounterID then
-        print('NumyAddonProfiler: encounter ended without matching encounter start');
+        self:Print('Encounter ended without matching encounter start');
         return;
     end
     snapshot.kill = success == 1;
@@ -1065,7 +1116,6 @@ function NAP:InitUI()
     -- DISPLAY --
     -------------
     do
-
         local ROW_HEIGHT = 20
         local UPDATE_INTERVAL = 1
         local continuousUpdate = true
@@ -1855,7 +1905,7 @@ function NAP:InitMinimapButton()
                 if IsShiftKeyDown() then
                     self.db.minimap.hide = true;
                     LibStub('LibDBIcon-1.0'):Hide(name);
-                    print('Minimap button hidden. Use |cffeda55f/nap reset|r to restore.');
+                    self:Print('Minimap button hidden. Use |cffeda55f/nap minimap|r to restore.');
 
                     return;
                 end

@@ -5,6 +5,8 @@
 --- @field addonName string
 --- @field addonTitle string
 --- @field addonNotes string
+--- @field addonIcon string
+--- @field memoryUsage number
 --- @field peakTime number
 --- @field overallPeakTime number
 --- @field encounterAvg number
@@ -28,6 +30,7 @@
 --- @class NAP_AddonInfo
 --- @field title string
 --- @field notes string
+--- @field iconMarkup string
 
 --- @class NAP_Bucket
 --- @field tickMap table<number, number> # tickIndex -> timestamp

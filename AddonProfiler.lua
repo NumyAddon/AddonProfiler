@@ -114,9 +114,23 @@ function NAP:Init()
         if version and version ~= '' then
             title = title .. ' |cff808080(' .. version .. ')|r';
         end
+
+        local iconTexture = C_AddOns.GetAddOnMetadata(i, 'IconTexture');
+        local iconAtlas = C_AddOns.GetAddOnMetadata(i, 'IconAtlas');
+        if not iconTexture and not iconAtlas then
+            iconTexture = '982414'; -- default to transparent icon
+        end
+        local iconMarkup;
+        if iconTexture then
+            iconMarkup = CreateSimpleTextureMarkup(iconTexture, 20, 20);
+        elseif iconAtlas then
+            iconMarkup = CreateAtlasMarkup(iconAtlas, 20, 20);
+        end
+
         self.addons[addonName] = {
             title = title,
             notes = notes,
+            iconMarkup = iconMarkup,
         };
         if isLoaded and addonName ~= thisAddonName then
             self:ADDON_LOADED(addonName);
@@ -782,6 +796,8 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
         addonName = addonName,
         addonTitle = info and info.title or '',
         addonNotes = info and info.notes or '',
+        addonIcon = info and info.iconMarkup or '',
+        memoryUsage = GetAddOnMemoryUsage(addonName),
         peakTime = 0,
         averageMs = 0,
         totalMs = 0,
@@ -907,9 +923,19 @@ function NAP:InitUI()
 
     local msText = "|cff808080ms|r";
     local xText = "|cff808080x|r";
+    local kbText = "|cff808080KB|r";
+    local mbText = "|cff808080MB|r";
     local greyColorFormat = "|cff808080%s|r";
     local whiteColorFormat = "|cfff8f8f2%s|r";
 
+    local MEMORY_FORMAT = function(val)
+        if ( val > 1000 ) then
+            val = val / 1000;
+
+            return ('%.2f %s'):format(val, mbText);
+        end
+        return ('%.0f %s'):format(val, kbText);
+    end
     local TIME_FORMAT = function(val) return (val > 0.0005 and whiteColorFormat or greyColorFormat):format(("%.3f"):format(val)) .. msText; end;
     local ROUND_TIME_FORMAT = function(val) return (val > 0.0005 and whiteColorFormat or greyColorFormat):format(val) .. msText; end;
     local COUNTER_FORMAT = function(val) return (val > 0.0005 and whiteColorFormat or greyColorFormat):format(val) .. xText; end;
@@ -948,10 +974,13 @@ function NAP:InitUI()
             order = counter(),
             availableInPassiveMode = true,
             justifyLeft = true,
-            title = "Addon Name",
+            title = "Addon",
             width = 300,
             textFormatter = RAW_FORMAT,
-            textKey = "addonTitle",
+            --- @param data NAP_ElementData
+            textFunc = function(data)
+                return data.addonIcon .. ' ' .. data.addonTitle;
+            end,
             sortMethods = {
                 --- @param a NAP_ElementData
                 --- @param b NAP_ElementData
@@ -1174,6 +1203,7 @@ function NAP:InitUI()
             end
 
             function display:OnShow()
+                UpdateAddOnMemoryUsage()
                 self:DoUpdate()
 
                 if continuousUpdate then
@@ -1537,6 +1567,8 @@ function NAP:InitUI()
                     GameTooltip:AddDoubleLine("Average CPU time per frame:", TIME_FORMAT(data.averageMs), 1, 0.92, 0, 1, 1, 1)
                     GameTooltip:AddDoubleLine("Total CPU time:", TIME_FORMAT(data.totalMs), 1, 0.92, 0, 1, 1, 1)
                     GameTooltip:AddDoubleLine("Number of frames:", RAW_FORMAT(data.numberOfTicks), 1, 0.92, 0, 1, 1, 1)
+                    GameTooltip:AddDoubleLine("Memory Usage:", MEMORY_FORMAT(data.memoryUsage), 1, 0.92, 0, 1, 1, 1)
+                    GameTooltip:AddLine("|cnNORMAL_FONT_COLOR:Note:|r Memory usage is updated only when opening the UI.", 1, 1, 1, true)
                     GameTooltip:Show()
                 end
             end

@@ -168,6 +168,19 @@ function NAP:Init()
 
         self:SwitchMode(self.db.mode, true);
     end);
+
+    if C_CVar.GetCVarBool('scriptProfile') then
+        RunNextFrame(function()
+            self:Print('Warning: scriptProfile is enabled, this can severely impact performance and is unnecessary for this addon to function. |cff71d5ff|Haddon:NumyAddonProfiler:scriptProfile|h[Reload]|h|r to disable it.');
+        end);
+        EventRegistry:RegisterCallback('SetItemRef', function(_, link)
+            local linkType, addonName, linkData = strsplit(':', link);
+            if linkType == 'addon' and addonName == 'NumyAddonProfiler' and linkData == 'scriptProfile' then
+                C_CVar.SetCVar('scriptProfile', '0');
+                ReloadUI();
+            end
+        end);
+    end
 end
 
 function NAP:Print(...)

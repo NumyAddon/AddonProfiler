@@ -342,6 +342,9 @@ function NAP:SwitchMode(newMode, force)
     self:ResetMetrics();
     self.ProfilerFrame:RefreshActiveColumns();
     self.ProfilerFrame:UpdateHeaders();
+    self.ProfilerFrame:UpdateHistoryRangeText();
+    self.ProfilerFrame.ModeDropdown:Hide();
+    self.ProfilerFrame.ModeDropdown:Show(); -- updates selection text
     RunNextFrame(function()
         self.ProfilerFrame.Headers:UpdateArrow();
         self.ProfilerFrame:UpdateSortComparator();
@@ -687,6 +690,7 @@ end
 
 --- @param forceUpdate boolean
 --- @return table<NAP_Bucket, number>? bucketsWithinHistory
+--- @return table|nil overallSnapshotOverrides
 function NAP:PrepareFilteredData(forceUpdate)
     local now = self.frozenAt or GetTime();
 
@@ -734,57 +738,79 @@ function NAP:PrepareFilteredData(forceUpdate)
         end
     end
     local snapshot = nil;
+    local displayNothing = false;
     if HISTORY_TYPE_COMBAT == historyType then
         local index = historyIndex;
         if index == HISTORY_LATEST then
             index = #self.combatSnapshots;
         end
         snapshot = self.combatSnapshots[index] and self.combatSnapshots[index].snapshot;
+        if not snapshot or not snapshot.isComplete then
+            displayNothing = true;
+        end
     elseif HISTORY_TYPE_ENCOUNTER == historyType then
         local index = historyIndex;
         if index == HISTORY_LATEST then
             index = #self.encounterSnapshots;
+            snapshot = self.encounterSnapshots[index] and self.encounterSnapshots[index].snapshot;
+            if snapshot and not snapshot.isComplete then
+                index = index - 1;
+            end
         end
         snapshot = self.encounterSnapshots[index] and self.encounterSnapshots[index].snapshot;
-    end
-    if snapshot and not snapshot.isComplete then
-        snapshot = nil;
-    end
-    if snapshot and snapshot.bucket then
-        withinHistory[snapshot.bucket] = 1;
+        if not snapshot then
+            displayNothing = true;
+        end
     end
     local overallSnapshotOverrides;
-    if snapshot then
+    self.ProfilerFrame.NoDataText:SetShown(displayNothing);
+    if displayNothing then
         overallSnapshotOverrides = {
-            encounterAvg = snapshot.bossAvg[TOTAL_ADDON_METRICS_KEY] or 0,
-            recentMs = snapshot.recentAvg[TOTAL_ADDON_METRICS_KEY] or 0,
-            peakTime = snapshot.peakTime[TOTAL_ADDON_METRICS_KEY] or 0,
-            totalMs = snapshot.total[TOTAL_ADDON_METRICS_KEY] or 0,
-            numberOfTicks = snapshot.endTick - snapshot.startTick,
-            applicationTotalMs = (snapshot.endTime - snapshot.startTime) * 1000,
-            startMetrics = snapshot.startMetrics[TOTAL_ADDON_METRICS_KEY] or {},
-            endMetrics = snapshot.endMetrics[TOTAL_ADDON_METRICS_KEY] or {},
+            encounterAvg = 0,
+            recentMs = 0,
+            peakTime = 0,
+            totalMs = 0,
+            numberOfTicks = 0,
+            applicationTotalMs = 0,
+            startMetrics = {},
+            endMetrics = {},
         };
-    end
-    local overallStats = self:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory, nil, overallSnapshotOverrides);
+    else
+        if snapshot and snapshot.bucket then
+            withinHistory[snapshot.bucket] = 1;
+        end
+        if snapshot then
+            overallSnapshotOverrides = {
+                encounterAvg = snapshot.bossAvg[TOTAL_ADDON_METRICS_KEY] or 0,
+                recentMs = snapshot.recentAvg[TOTAL_ADDON_METRICS_KEY] or 0,
+                peakTime = snapshot.peakTime[TOTAL_ADDON_METRICS_KEY] or 0,
+                totalMs = snapshot.total[TOTAL_ADDON_METRICS_KEY] or 0,
+                numberOfTicks = snapshot.endTick - snapshot.startTick,
+                applicationTotalMs = (snapshot.endTime - snapshot.startTime) * 1000,
+                startMetrics = snapshot.startMetrics[TOTAL_ADDON_METRICS_KEY] or {},
+                endMetrics = snapshot.endMetrics[TOTAL_ADDON_METRICS_KEY] or {},
+            };
+        end
+        local overallStats = self:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory, nil, overallSnapshotOverrides);
 
-    for addonName in pairs(self.loadedAddons) do
-        local info = self.addons[addonName];
-        if info.title:lower():match(self.curMatch) then
-            local snapshotOverrides;
-            if snapshot then
-                snapshotOverrides = {
-                    encounterAvg = snapshot.bossAvg[addonName] or 0,
-                    recentMs = snapshot.recentAvg[addonName] or 0,
-                    peakTime = snapshot.peakTime[addonName] or 0,
-                    totalMs = snapshot.total[addonName] or 0,
-                    numberOfTicks = overallSnapshotOverrides and overallSnapshotOverrides.numberOfTicks or 0,
-                    applicationTotalMs = overallSnapshotOverrides and overallSnapshotOverrides.applicationTotalMs or 0,
-                    startMetrics = snapshot.startMetrics[addonName] or {},
-                    endMetrics = snapshot.endMetrics[addonName] or {},
-                };
+        for addonName in pairs(self.loadedAddons) do
+            local info = self.addons[addonName];
+            if info.title:lower():match(self.curMatch) then
+                local snapshotOverrides;
+                if snapshot then
+                    snapshotOverrides = {
+                        encounterAvg = snapshot.bossAvg[addonName] or 0,
+                        recentMs = snapshot.recentAvg[addonName] or 0,
+                        peakTime = snapshot.peakTime[addonName] or 0,
+                        totalMs = snapshot.total[addonName] or 0,
+                        numberOfTicks = overallSnapshotOverrides and overallSnapshotOverrides.numberOfTicks or 0,
+                        applicationTotalMs = overallSnapshotOverrides and overallSnapshotOverrides.applicationTotalMs or 0,
+                        startMetrics = snapshot.startMetrics[addonName] or {},
+                        endMetrics = snapshot.endMetrics[addonName] or {},
+                    };
+                end
+                t_insert(self.filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
             end
-            t_insert(self.filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
         end
     end
 
@@ -1322,10 +1348,34 @@ function NAP:InitUI()
             historyMenu:SetPoint("TOPRIGHT", -11, -32);
             historyMenu:SetWidth(150);
             historyMenu:SetFrameLevel(3);
-            historyMenu:OverrideText("History Range");
+
+            local SINCE_RESET = "Since Reset";
+            local LAST_ENCOUNTER = "Last Encounter";
+            local LAST_COMBAT = "Last Combat";
+
+            function display:UpdateHistoryRangeText()
+                local type, range = NAP:GetActiveHistoryRange();
+                if HISTORY_TYPE_TIME_RANGE == type then
+                    historyMenu:OverrideText(SecondsToTime(range, false, true));
+                elseif HISTORY_TYPE_ENCOUNTER == type then
+                    if HISTORY_LATEST == range then
+                        historyMenu:OverrideText(LAST_ENCOUNTER);
+                    else
+                        local encounterData = NAP.encounterSnapshots[range];
+                        local text = string.format("%d - %s (%s)", range, encounterData.name, encounterData.kill and "Kill" or "Wipe");
+                        historyMenu:OverrideText(text);
+                    end
+                elseif HISTORY_TYPE_COMBAT == type then
+                    historyMenu:OverrideText(LAST_COMBAT);
+                elseif HISTORY_TYPE_SINCE_RESET == type then
+                    historyMenu:OverrideText(SINCE_RESET);
+                end
+            end
+            display:UpdateHistoryRangeText();
 
             local function onAfterSelection()
-                display.elapsed = UPDATE_INTERVAL
+                display.elapsed = UPDATE_INTERVAL;
+                display:UpdateHistoryRangeText();
             end
             local function isTypeSelected(data)
                 return data == NAP:GetActiveHistoryRange();
@@ -1363,7 +1413,7 @@ function NAP:InitUI()
             historyMenu:SetupMenu(function(_, rootDescription)
                 rootDescription:CreateTitle("Select History Range");
 
-                local sinceReset = rootDescription:CreateRadio("Since Reset", isTypeSelected, selectType, HISTORY_TYPE_SINCE_RESET);
+                local sinceReset = rootDescription:CreateRadio(SINCE_RESET, isTypeSelected, selectType, HISTORY_TYPE_SINCE_RESET);
                 sinceReset:SetTitleAndTextTooltip("Since Reset/Reload", "Show all information since the last reset.");
 
                 local timeRangeTypeAllowed = NAP.db.mode == MODE_ACTIVE;
@@ -1383,7 +1433,7 @@ function NAP:InitUI()
                 if NAP.encounterSnapshots[latestIndex] and not NAP.encounterSnapshots[latestIndex].snapshot.isComplete then -- encounter is still in progress
                     latestIndex = latestIndex - 1;
                 end
-                encounter:CreateRadio("Last Encounter", isEncounterSelected, selectEncounter, { index = HISTORY_LATEST, isLatest = true });
+                encounter:CreateRadio(LAST_ENCOUNTER, isEncounterSelected, selectEncounter, { index = HISTORY_LATEST, isLatest = true });
                 for index, encounterData in ipairs(NAP.encounterSnapshots) do
                     if encounterData.snapshot.isComplete then
                         local text = string.format("%d - %s (%s)", index, encounterData.name, encounterData.kill and "Kill" or "Wipe");
@@ -1391,8 +1441,16 @@ function NAP:InitUI()
                     end
                 end
 
-                rootDescription:CreateRadio("Last Combat", isTypeSelected, selectType, HISTORY_TYPE_COMBAT);
+                local lastCombat = rootDescription:CreateRadio(LAST_COMBAT, isTypeSelected, selectType, HISTORY_TYPE_COMBAT);
+                lastCombat:SetTitleAndTextTooltip(LAST_COMBAT, "Show addon performance during the last combat.");
             end)
+        end
+
+        local historyRangeText = display:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        do
+            historyRangeText:SetText("History Range")
+            historyRangeText:SetPoint("RIGHT", historyMenu, "LEFT", -4, 0)
+            historyRangeText:SetJustifyH("RIGHT")
         end
 
         local search = CreateFrame("EditBox", "$parentSearchBox", display, "SearchBoxTemplate")
@@ -1430,9 +1488,9 @@ function NAP:InitUI()
                 local performance = rootDescription:CreateRadio("Performance Mode", isSelected, onSelection, MODE_PERFORMANCE)
                 local passive = rootDescription:CreateRadio("Passive Mode", isSelected, onSelection, MODE_PASSIVE)
 
-                active:SetTitleAndTextTooltip("Active Mode", "Provides the most amount of information, and allows you to select a History Range to filter by.")
-                performance:SetTitleAndTextTooltip("Performance Mode", "Performs slightly less work in the background, but does not allow you to select a History Range.")
-                passive:SetTitleAndTextTooltip("Passive Mode", "No information is collected in the background, which limits the columns that can be displayed. But 0 work is performed in the background while the UI is closed.")
+                active:SetTitleAndTextTooltip("Active Mode", "Provides the most amount of information, and allows you to select a History Range to filter by.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap active"))
+                performance:SetTitleAndTextTooltip("Performance Mode", "Performs slightly less work in the background, but does not allow you to select a History Range.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap performance"))
+                passive:SetTitleAndTextTooltip("Passive Mode", "No information is collected in the background, which limits the columns that can be displayed. But 0 work is performed in the background while the UI is closed.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap passive"))
             end)
         end
 
@@ -1686,6 +1744,14 @@ function NAP:InitUI()
             ScrollUtil.InitScrollBoxListWithScrollBar(scrollBox, scrollBar, view)
         end
 
+        local noDataText = display:CreateFontString(nil, "ARTWORK", "GameFontHighlightLarge")
+        display.NoDataText = noDataText
+        do
+            noDataText:Hide()
+            noDataText:SetText("No data available for the selected History Range.")
+            noDataText:SetPoint("CENTER", display.ScrollBox, "CENTER")
+        end
+
         local playButton = CreateFrame("Button", nil, display)
         display.PlayButton = playButton
         do
@@ -1845,6 +1911,19 @@ function NAP:InitUI()
         do
             toggleButton:SetPoint("BOTTOM", 0, 6)
             toggleButton:SetText(self:IsLogging() and "Disable" or "Enable")
+            local function showTooltip()
+                GameTooltip:SetOwner(toggleButton, "ANCHOR_TOPLEFT", 0, 0)
+                GameTooltip:AddLine(HIGHLIGHT_FONT_COLOR:WrapTextInColorCode((self:IsLogging() and "Disable" or "Enable") .. " logging"))
+                GameTooltip:AddLine("Metrics are frozen when disabling logging, and reset when enabling logging.", nil, nil, nil, true)
+                GameTooltip_AddInstructionLine(GameTooltip, "/nap disable")
+                GameTooltip_AddInstructionLine(GameTooltip, "/nap enable")
+                GameTooltip_AddInstructionLine(GameTooltip, "/nap toggle")
+                GameTooltip:Show()
+            end
+            toggleButton:SetScript("OnEnter", showTooltip)
+            toggleButton:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
             DynamicResizeButton_Resize(toggleButton)
 
             toggleButton:SetOnClickHandler(function()
@@ -1854,6 +1933,9 @@ function NAP:InitUI()
                     self:EnableLogging()
                 end
                 display.Stats:Update()
+                if GameTooltip:IsOwned(toggleButton) then
+                    showTooltip()
+                end
             end)
         end
 
@@ -1861,6 +1943,15 @@ function NAP:InitUI()
         do
             resetButton:SetPoint("RIGHT", toggleButton, "LEFT", -6, 0)
             resetButton:SetText("Reset")
+            resetButton:SetScript("OnEnter", function()
+                GameTooltip:SetOwner(resetButton, "ANCHOR_TOPLEFT", 0, 0)
+                GameTooltip:AddLine(HIGHLIGHT_FONT_COLOR:WrapTextInColorCode("Reset all metrics"))
+                GameTooltip_AddInstructionLine(GameTooltip, "/nap reset")
+                GameTooltip:Show()
+            end)
+            resetButton:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
             DynamicResizeButton_Resize(resetButton)
 
             resetButton:SetOnClickHandler(function()
@@ -1973,7 +2064,7 @@ function NAP:InitMinimapButton()
                 ))
                 tooltip:AddLine('|cffeda55fLeft-Click|r to toggle the frame')
                 tooltip:AddLine('|cffeda55fRight-Click|r to toggle logging')
-                tooltip:AddLine('|cffeda55fShift-Click|r to hide this button. (|cffeda55f/nap reset|r to restore)');
+                tooltip:AddLine('|cffeda55fShift-Click|r to hide this button. (|cffeda55f/nap minimap|r to restore)');
             end,
         }
     );

@@ -1270,16 +1270,25 @@ function NAP:InitUI()
             display:SetMovable(true)
             display:EnableMouse(true)
             display:SetToplevel(true)
+            display:SetResizable(true)
             display:SetScript("OnShow", display.OnShow)
             display:SetScript("OnHide", display.OnHide)
             display:Hide()
+
+            local resizeButton = CreateFrame("Button", nil, display, "PanelResizeButtonTemplate")
+            display.ResizeButton = resizeButton
+            resizeButton:Init(display)
+            resizeButton:SetMinHeight(140) -- shows only the addon total
+            resizeButton:SetPoint("BOTTOMRIGHT", -4, 4)
 
             function display:UpdateWidth()
                 local width = 40;
                 for _, info in pairs(self.activeColumns) do
                     width = width + (info.width - 2)
                 end
-                display:SetSize(width, 651)
+                self:SetWidth(width)
+                self.ResizeButton.minWidth = width
+                self.ResizeButton.maxWidth = width
             end
             display:UpdateWidth()
 
@@ -1462,11 +1471,11 @@ function NAP:InitUI()
             search:SetHistoryLines(1)
             search:SetMaxBytes(64)
             search:HookScript("OnTextChanged", function(self)
-            local text = s_trim(self:GetText()):lower()
-            NAP.curMatch = text == "" and ".+" or text
+                local text = s_trim(self:GetText()):lower()
+                NAP.curMatch = text == "" and ".+" or text
 
-            display.elapsed = 50
-        end)
+                display.elapsed = 50
+            end)
         end
 
         local modeMenu = CreateFrame("DropdownButton", nil, display, "WowStyle1DropdownTemplate");
@@ -1600,15 +1609,15 @@ function NAP:InitUI()
                 self:RegisterEvent("GLOBAL_MOUSE_UP")
             end)
             thumb:HookScript("OnEvent", function(self, event, ...)
-            if event == "GLOBAL_MOUSE_UP" then
-                local button = ...
-                if button ~= "LeftButton" then return end
-                if mouseDown then
-                    scrollBar.onButtonMouseUp(self, button)
+                if event == "GLOBAL_MOUSE_UP" then
+                    local button = ...
+                    if button ~= "LeftButton" then return end
+                    if mouseDown then
+                        scrollBar.onButtonMouseUp(self, button)
+                    end
+                    mouseDown = false
                 end
-                mouseDown = false
-            end
-        end)
+            end)
         end
 
         --- @class NAP_RowMixin: BUTTON
@@ -2062,7 +2071,7 @@ function NAP:InitMinimapButton()
                         and GREEN_FONT_COLOR:WrapTextInColorCode("enabled")
                         or RED_FONT_COLOR:WrapTextInColorCode("disabled")
                 ))
-                tooltip:AddLine(CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. ' to toggle the frame')
+                tooltip:AddLine(CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. ' to toggle the UI')
                 tooltip:AddLine(CreateAtlasMarkup('NPE_RightClick', 18, 18) .. ' to toggle logging')
                 tooltip:AddLine('|cffeda55fShift-Click|r to hide this button. (|cffeda55f/nap minimap|r to restore)');
             end,
@@ -2090,7 +2099,7 @@ do
                 and GREEN_FONT_COLOR:WrapTextInColorCode("enabled")
                 or RED_FONT_COLOR:WrapTextInColorCode("disabled")
         ))
-        GameTooltip:AddLine(CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. ' to toggle the frame');
+        GameTooltip:AddLine(CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. ' to toggle the UI');
         GameTooltip:AddLine(CreateAtlasMarkup('NPE_RightClick', 18, 18) .. ' to toggle logging');
         GameTooltip:Show();
     end

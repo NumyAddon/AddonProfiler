@@ -97,6 +97,10 @@ local MODE_PERFORMANCE = 'performance';
 --- collect no data at all, just reset the spike ms counters on reset - disables history range, and maybe show different columns?
 local MODE_PASSIVE = 'passive';
 
+local CLOSE_ON_ESC_ALWAYS = 'always';
+local CLOSE_ON_ESC_NEVER = 'never';
+local CLOSE_ON_ESC_IN_COMBAT = 'inCombat';
+
 --- @type table<string, NAP_AddonInfo>
 NAP.addons = {};
 --- @type table<string, boolean> # list of addon names
@@ -301,6 +305,7 @@ function NAP:InitDB()
     end
 
     self.db.mode = self.db.mode or MODE_ACTIVE;
+    self.db.closeOnEsc = self.db.closeOnEsc or CLOSE_ON_ESC_ALWAYS;
 
     self.db.minimap = self.db.minimap or {};
     self.db.minimap.hide = self.db.minimap.hide or false;
@@ -1265,8 +1270,9 @@ function NAP:InitUI()
             end
             display:RefreshActiveColumns()
 
-            t_insert(UISpecialFrames, self.ProfilerFrame:GetName())
+            display.defaultHeight = 650
             display:SetPoint("CENTER", 0, 0)
+            display:SetHeight(display.defaultHeight)
             display:SetMovable(true)
             display:EnableMouse(true)
             display:SetToplevel(true)
@@ -1275,6 +1281,17 @@ function NAP:InitUI()
             display:SetScript("OnShow", display.OnShow)
             display:SetScript("OnHide", display.OnHide)
             display:Hide()
+
+            display:HookScript("OnMouseWheel", function(_, delta)
+                if BlizzMoveAPI or not IsControlKeyDown() then return; end
+                local MAX_SCALE = 2.5;
+                local MIN_SCALE = 0.3;
+
+                local scale = display:GetScale();
+                scale = scale + 0.1 * delta;
+                scale = max(MIN_SCALE, min(MAX_SCALE, scale));
+                display:SetScale(scale);
+            end);
 
             local resizeButton = CreateFrame("Button", nil, display, "PanelResizeButtonTemplate")
             display.ResizeButton = resizeButton
@@ -1346,6 +1363,43 @@ function NAP:InitUI()
                     end
                 end
             end
+
+            do -- close on esc
+                function display:UpdateCloseOnEsc()
+                    local name = display:GetName();
+                    if
+                        CLOSE_ON_ESC_ALWAYS == NAP.db.closeOnEsc
+                        or (CLOSE_ON_ESC_IN_COMBAT == NAP.db.closeOnEsc and InCombatLockdown())
+                    then
+                        if not tIndexOf(UISpecialFrames, name) then
+                            table.insert(UISpecialFrames, name);
+                        end
+                    elseif
+                        CLOSE_ON_ESC_NEVER == NAP.db.closeOnEsc
+                        or (CLOSE_ON_ESC_IN_COMBAT == NAP.db.closeOnEsc and not InCombatLockdown())
+                    then
+                        tDeleteItem(UISpecialFrames, name);
+                    end
+
+                    if CLOSE_ON_ESC_IN_COMBAT == NAP.db.closeOnEsc then
+                        display:RegisterEvent("PLAYER_REGEN_DISABLED");
+                        display:RegisterEvent("PLAYER_REGEN_ENABLED");
+                    else
+                        display:UnregisterEvent("PLAYER_REGEN_DISABLED");
+                        display:UnregisterEvent("PLAYER_REGEN_ENABLED");
+                    end
+                end
+                display:UpdateCloseOnEsc();
+                display:SetScript("OnEvent", function(_, event)
+                    local name = display:GetName();
+                    if "PLAYER_REGEN_DISABLED" == event and CLOSE_ON_ESC_IN_COMBAT == NAP.db.closeOnEsc and not tIndexOf(UISpecialFrames, name) then
+                        table.insert(UISpecialFrames, name);
+                    end
+                    if "PLAYER_REGEN_ENABLED" == event and CLOSE_ON_ESC_IN_COMBAT == NAP.db.closeOnEsc then
+                        tDeleteItem(UISpecialFrames, name);
+                    end
+                end);
+            end
         end
 
         local titleBar = CreateFrame("Frame", nil, display, "PanelDragBarTemplate")
@@ -1354,6 +1408,73 @@ function NAP:InitUI()
             titleBar:SetPoint("TOPLEFT", 0, 0)
             titleBar:SetPoint("BOTTOMRIGHT", display, "TOPRIGHT", 0, -32)
             titleBar:Init(display)
+        end
+
+        local settings = CreateFrame("DropdownButton", nil, display);
+        display.Settings = settings;
+        do
+            settings:SetFrameStrata("HIGH");
+            settings:SetPoint("RIGHT", display.TitleBar, "RIGHT", -20, 3);
+            settings:SetSize(32, 32);
+            do -- icon
+                settings.atlasKey = "GM-icon-settings";
+                settings:SetNormalAtlas(settings.atlasKey);
+                Mixin(settings, ButtonStateBehaviorMixin);
+                function settings:OnButtonStateChanged()
+                    local atlas = self.atlasKey;
+                    if self:IsDownOver() or self:IsOver() then
+                        atlas = atlas.."-hover";
+                    elseif self:IsDown() then
+                        atlas = atlas.."-pressed";
+                    end
+
+                    self:GetNormalTexture():SetAtlas(atlas, TextureKitConstants.IgnoreAtlasSize);
+                end
+                settings:OnLoad();
+                settings:HookScript("OnEnter", settings.OnEnter);
+                settings:HookScript("OnLeave", settings.OnLeave);
+                settings:HookScript("OnMouseDown", settings.OnMouseDown);
+                settings:HookScript("OnMouseUp", settings.OnMouseUp);
+            end
+
+            settings:HookScript("OnEnter", function()
+                GameTooltip:SetOwner(settings, "ANCHOR_TOPRIGHT");
+                GameTooltip:SetText("Settings");
+                GameTooltip_AddInstructionLine(GameTooltip, CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. " to open settings");
+                GameTooltip:Show();
+            end);
+            settings:HookScript("OnLeave", function()
+                GameTooltip:Hide();
+            end);
+            --- @param rootDescription RootMenuDescriptionProxy
+            settings:SetupMenu(function(_, rootDescription)
+                rootDescription:CreateTitle(INTERFACE_OPTIONS);
+                local closeOnEsc = rootDescription:CreateButton("Close On ESC");
+                do
+                    closeOnEsc:SetTitleAndTextTooltip("Close on ESC", "Choose whether the window should close when pressing ESC.");
+
+                    local function isSelected(data)
+                        return NAP.db.closeOnEsc == data;
+                    end
+                    local function setSelected(data)
+                        NAP.db.closeOnEsc = data;
+                        display:UpdateCloseOnEsc();
+
+                        return MenuResponse.Refresh;
+                    end
+                    closeOnEsc:CreateRadio(ALWAYS, isSelected, setSelected, CLOSE_ON_ESC_ALWAYS);
+                    closeOnEsc:CreateRadio(HUD_EDIT_MODE_SETTING_ACTION_BAR_VISIBLE_SETTING_IN_COMBAT, isSelected, setSelected, CLOSE_ON_ESC_IN_COMBAT);
+                    closeOnEsc:CreateRadio(NEVER, isSelected, setSelected, CLOSE_ON_ESC_NEVER);
+                end
+
+                if not BlizzMoveAPI then
+                    local resetScale = rootDescription:CreateButton("Reset Scale", function() display:SetScale(1); end);
+                    resetScale:SetTitleAndTextTooltip("Reset Scale", "Reset the window scale. You can change the scale with CTRL + SCROLL");
+                end
+
+                local resetHeight = rootDescription:CreateButton("Reset Height", function() display:SetHeight(display.defaultHeight); end);
+                resetHeight:SetTitleAndTextTooltip("Reset Height", "Reset the window height to the default.");
+            end);
         end
 
         local historyMenu = CreateFrame("DropdownButton", nil, display, "WowStyle1DropdownTemplate");

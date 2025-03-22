@@ -2062,13 +2062,41 @@ function NAP:InitMinimapButton()
                         and GREEN_FONT_COLOR:WrapTextInColorCode("enabled")
                         or RED_FONT_COLOR:WrapTextInColorCode("disabled")
                 ))
-                tooltip:AddLine('|cffeda55fLeft-Click|r to toggle the frame')
-                tooltip:AddLine('|cffeda55fRight-Click|r to toggle logging')
+                tooltip:AddLine(CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. ' to toggle the frame')
+                tooltip:AddLine(CreateAtlasMarkup('NPE_RightClick', 18, 18) .. ' to toggle logging')
                 tooltip:AddLine('|cffeda55fShift-Click|r to hide this button. (|cffeda55f/nap minimap|r to restore)');
             end,
         }
     );
     LibStub('LibDBIcon-1.0'):Register(name, dataObject, self.db.minimap);
+end
+
+do
+    function NumyAddonProfiler_OnAddonCompartmentClick(_, mouseButton)
+        if mouseButton == 'LeftButton' then
+            NAP:ToggleFrame();
+        else
+            if NAP:IsLogging() then
+                NAP:DisableLogging();
+            else
+                NAP:EnableLogging();
+            end
+        end
+    end
+    function NumyAddonProfiler_OnAddonCompartmentEnter(_, button)
+        GameTooltip:SetOwner(button, 'ANCHOR_RIGHT');
+        GameTooltip:AddLine('Addon Profiler ' .. (
+            NAP:IsLogging()
+                and GREEN_FONT_COLOR:WrapTextInColorCode("enabled")
+                or RED_FONT_COLOR:WrapTextInColorCode("disabled")
+        ))
+        GameTooltip:AddLine(CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. ' to toggle the frame');
+        GameTooltip:AddLine(CreateAtlasMarkup('NPE_RightClick', 18, 18) .. ' to toggle logging');
+        GameTooltip:Show();
+    end
+    function NumyAddonProfiler_OnAddonCompartmentLeave()
+        GameTooltip:Hide();
+    end
 end
 
 NAP:Init();

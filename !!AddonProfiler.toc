@@ -7,6 +7,9 @@
 ## Notes: AddonProfiler is a pretty UI for blizzard's addon profiling stats.
 ## Author: Numy
 ## SavedVariables: AddonProfilerDB
+## AddonCompartmentFunc: NumyAddonProfiler_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: NumyAddonProfiler_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: NumyAddonProfiler_OnAddonCompartmentLeave
 ## IconTexture: Interface\Addons\!!AddonProfiler\media\icon
 ## OptionalDeps: !BugGrabber
 ## X-Curse-Project-ID: 1163936

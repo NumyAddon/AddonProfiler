@@ -1271,6 +1271,7 @@ function NAP:InitUI()
             display:EnableMouse(true)
             display:SetToplevel(true)
             display:SetResizable(true)
+            display:SetClampedToScreen(true)
             display:SetScript("OnShow", display.OnShow)
             display:SetScript("OnHide", display.OnHide)
             display:Hide()
@@ -1289,6 +1290,10 @@ function NAP:InitUI()
                 self:SetWidth(width)
                 self.ResizeButton.minWidth = width
                 self.ResizeButton.maxWidth = width
+
+                local clampDistance = 40
+                local clampWidth = width - clampDistance
+                self:SetClampRectInsets(clampWidth, -clampWidth, 0, 0)
             end
             display:UpdateWidth()
 

@@ -106,6 +106,11 @@ NAP.addons = {};
 --- @type table<string, boolean> # list of addon names
 NAP.loadedAddons = {};
 
+local ADDON_PROFILING_DISABLED_WARNING =
+    "Addon Profling is disabled, perhaps you installed a weakaura similar to wago.io/DisableCPUProfiling. Remove it to use this addon."
+    .. "\n"
+    .. ("Click %shere%s to enable addon profiling again."):format("|cff71d5ff|Haddon:NumyAddonProfiler:addonProfilerEnabled|h[", "]|h|r")
+
 --- Note: NAP:Init() is called at the end of the script body, BEFORE the addon_loaded event
 function NAP:Init()
     for i = 1, C_AddOns.GetNumAddOns() do
@@ -173,18 +178,39 @@ function NAP:Init()
         self:SwitchMode(self.db.mode, true);
     end);
 
+    EventRegistry:RegisterCallback('SetItemRef', function(_, link)
+        local linkType, addonName, linkData = strsplit(':', link);
+        if linkType == 'addon' and addonName == 'NumyAddonProfiler' then
+            if linkData == 'scriptProfile' then
+                C_CVar.SetCVar('scriptProfile', '0');
+                ReloadUI();
+            elseif linkData == 'addonProfilerEnabled' then
+                C_CVar.SetCVar('addonProfilerEnabled', '1');
+                if C_AddOnProfiler.IsEnabled() then
+                    self:Print('Addon profiling has been enabled.');
+                    if self.ProfilerFrame and self.ProfilerFrame.ProfilingDisabledWarning then
+                        self.ProfilerFrame.ProfilingDisabledWarning:Hide();
+                    end
+                else
+                    self:Print('Addon profiling is still disabled. Please check your WeakAuras or other addons that might disable it.');
+                end
+            end
+        end
+    end);
     if C_CVar.GetCVarBool('scriptProfile') then
         RunNextFrame(function()
             self:Print('Warning: scriptProfile is enabled, this can severely impact performance and is unnecessary for this addon to function. |cff71d5ff|Haddon:NumyAddonProfiler:scriptProfile|h[Reload]|h|r to disable it.');
         end);
-        EventRegistry:RegisterCallback('SetItemRef', function(_, link)
-            local linkType, addonName, linkData = strsplit(':', link);
-            if linkType == 'addon' and addonName == 'NumyAddonProfiler' and linkData == 'scriptProfile' then
-                C_CVar.SetCVar('scriptProfile', '0');
-                ReloadUI();
-            end
-        end);
     end
+    local warned, timer = false, nil;
+    local function checkProfilingEnabled()
+        if warned or C_AddOnProfiler.IsEnabled() then return; end
+        warned = true;
+        timer:Cancel();
+        self:Print(ADDON_PROFILING_DISABLED_WARNING);
+    end
+    timer = C_Timer.NewTimer(10, checkProfilingEnabled);
+    RunNextFrame(checkProfilingEnabled);
 end
 
 function NAP:Print(...)
@@ -1253,6 +1279,7 @@ function NAP:InitUI()
                 if continuousUpdate then
                     self:SetScript("OnUpdate", self.OnUpdate)
                 end
+                self.ProfilingDisabledWarning:SetShown(not C_AddOnProfiler.IsEnabled())
             end
 
             function display:OnHide()
@@ -2096,6 +2123,34 @@ function NAP:InitUI()
                     display.elapsed = UPDATE_INTERVAL
                 end)
             end)
+        end
+
+        display.ProfilingDisabledWarning = CreateFrame("Frame", nil, display)
+        do
+            local warning = display.ProfilingDisabledWarning
+            warning:SetFrameLevel(500)
+            warning:SetAllPoints(display.ScrollBox)
+            local warningText = warning:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            warningText:SetPoint("CENTER")
+            warningText:SetText(ADDON_PROFILING_DISABLED_WARNING)
+            warning:SetHyperlinksEnabled(true)
+            warning:SetScript("OnHyperlinkClick", function()
+                C_CVar.SetCVar("addonProfilerEnabled", "1")
+                GameTooltip:Hide()
+                warning:Hide()
+            end)
+            warning:SetScript("OnHyperlinkEnter", function()
+                GameTooltip:SetOwner(warning, "ANCHOR_CURSOR")
+                GameTooltip:SetText("Click to enable addon profiling again.")
+            end)
+            warning:SetScript("OnHyperlinkLeave", function()
+                GameTooltip:Hide()
+            end)
+            warning:EnableMouseMotion(true)
+
+            local background = warning:CreateTexture(nil, "BACKGROUND")
+            background:SetColorTexture(0.1, 0.1, 0.1, 0.75)
+            background:SetAllPoints()
         end
     end
 end

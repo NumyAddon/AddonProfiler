@@ -1331,9 +1331,9 @@ function NAP:InitUI()
                 for _, info in pairs(self.activeColumns) do
                     width = width + (info.width - 2)
                 end
-                self:SetWidth(width)
                 self.ResizeButton.minWidth = width
                 self.ResizeButton.maxWidth = width
+                self:SetWidth(width)
 
                 local clampDistance = 40
                 local clampWidth = width - clampDistance

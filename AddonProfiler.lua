@@ -176,6 +176,11 @@ function NAP:Init()
         end
 
         self:SwitchMode(self.db.mode, true);
+        if self.db.enabled then
+            self:EnableLogging();
+        else
+            self:DisableLogging();
+        end
     end);
 
     EventRegistry:RegisterCallback('SetItemRef', function(_, link)
@@ -330,18 +335,24 @@ function NAP:InitDB()
         end
     end
 
-    self.db.mode = self.db.mode or MODE_ACTIVE;
-    self.db.closeOnEsc = self.db.closeOnEsc or CLOSE_ON_ESC_ALWAYS;
-
-    self.db.minimap = self.db.minimap or {};
-    self.db.minimap.hide = self.db.minimap.hide or false;
+    local defaults = {
+        enabled = true,
+        mode = MODE_ACTIVE,
+        closeOnEsc = CLOSE_ON_ESC_ALWAYS,
+        minimap = {
+            hide = false,
+        },
+    };
+    for key, value in pairs(defaults) do
+        if self.db[key] == nil then
+            self.db[key] = value;
+        end
+    end
 end
 
 function NAP:ADDON_LOADED(addonName)
     if thisAddonName == addonName then
         self:InitDB();
-        AddonProfilerDB = AddonProfilerDB or {};
-        self.db = AddonProfilerDB;
         self:InitUI();
         self:InitMinimapButton();
     end
@@ -2160,29 +2171,35 @@ function NAP:IsLogging()
 end
 
 function NAP:EnableLogging()
+    self.db.enabled = true
     self.frozenAt = nil
     self.frozenMetrics = nil
     self:ResetMetrics()
     t_wipe(self.filteredData)
     self.dataProvider = nil
 
+    self.collectData = true;
+
     self.ToggleButton:SetText("Disable")
     DynamicResizeButton_Resize(self.ToggleButton)
+    self:UpdateMinimapIcon()
 
     self.eventFrame:Show()
-    self.collectData = true;
     self:StartPurgeTicker()
 
     self.ProfilerFrame.ScrollBox:Flush()
 end
 
 function NAP:DisableLogging()
+    self.db.enabled = false
     self.frozenAt = GetTime()
     self.frozenMetrics = self:GetCurrentMsSpikeMetrics()
-    self.ToggleButton:SetText("Enable")
-    DynamicResizeButton_Resize(self.ToggleButton)
 
     self.collectData = false
+
+    self.ToggleButton:SetText("Enable")
+    DynamicResizeButton_Resize(self.ToggleButton)
+    self:UpdateMinimapIcon()
 
     self.eventFrame:Hide()
     if self.purgerTicker then
@@ -2213,20 +2230,21 @@ function NAP:RegisterIntoBlizzMove()
     end
 end
 
+function NAP:UpdateMinimapIcon()
+    self.minimapButton.icon = self:IsLogging()
+        and 'interface/icons/spell_nature_timestop'
+        or 'interface/icons/timelesscoin-bloody';
+end
+
 function NAP:InitMinimapButton()
     local name = 'NumyAddonProfiler';
-    local function getIcon()
-        return self:IsLogging()
-            and 'interface/icons/spell_nature_timestop'
-            or 'interface/icons/timelesscoin-bloody';
-    end
     local dataObject;
     dataObject = LibStub('LibDataBroker-1.1'):NewDataObject(
         name,
         {
             type = 'launcher',
             text = 'Addon Profiler',
-            icon = getIcon(),
+            icon = '',
             OnClick = function(_, button)
                 if IsShiftKeyDown() then
                     self.db.minimap.hide = true;
@@ -2243,7 +2261,6 @@ function NAP:InitMinimapButton()
                     else
                         self:EnableLogging();
                     end
-                    dataObject.icon = getIcon();
                 end
             end,
             OnTooltipShow = function(tooltip)
@@ -2258,6 +2275,8 @@ function NAP:InitMinimapButton()
             end,
         }
     );
+    self.minimapButton = dataObject;
+    self:UpdateMinimapIcon();
     LibStub('LibDBIcon-1.0'):Register(name, dataObject, self.db.minimap);
 end
 

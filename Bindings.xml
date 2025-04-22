@@ -1,0 +1,8 @@
+<Bindings>
+    <Binding name="Addon Profiler: Toggle UI" header="Addon Profiler" category="ADDONS">
+        SlashCmdList['NUMY_ADDON_PROFILER']("ui")
+    </Binding>
+    <Binding name="Addon Profiler: Toggle Logging" category="ADDONS">
+        SlashCmdList['NUMY_ADDON_PROFILER']("toggle")
+    </Binding>
+</Bindings>

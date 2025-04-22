@@ -1512,6 +1512,14 @@ function NAP:InitUI()
 
                 local resetHeight = rootDescription:CreateButton("Reset Height", function() display:SetHeight(display.defaultHeight); end);
                 resetHeight:SetTitleAndTextTooltip("Reset Height", "Reset the window height to the default.");
+
+                local openKeybindSettings = rootDescription:CreateButton("Set Keybinds", function()
+                    Settings.OpenToCategory(Settings.KEYBINDINGS_CATEGORY_ID);
+                    RunNextFrame(function()
+                        SettingsPanel.SearchBox:SetText("Addon Profiler");
+                    end);
+                end);
+                openKeybindSettings:SetTitleAndTextTooltip("Set Keybinds", "Open the keybinding settings.");
             end);
         end
 

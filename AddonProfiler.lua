@@ -625,8 +625,8 @@ function NAP:CloseSnapshot(snapshot)
     snapshot.bossAvg = self:GetCurrentMetrics(Enum_AddOnProfilerMetric_EncounterAverageTime);
     snapshot.recentAvg = self:GetCurrentMetrics(Enum_AddOnProfilerMetric_RecentAverageTime);
 
+    snapshot.total = {};
     if self.db.mode ~= MODE_PASSIVE then
-        snapshot.total = {};
         for addonName, endTotal in pairs(self.totalMs) do
             snapshot.total[addonName] = endTotal - (snapshot.startTotal[addonName] or 0);
         end

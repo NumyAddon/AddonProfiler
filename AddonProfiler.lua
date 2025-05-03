@@ -131,6 +131,9 @@ function NAP:Init()
         end
         local iconMarkup;
         if iconTexture then
+            if iconTexture == '982414' then
+                iconTexture = [[Interface\Addons\!!AddonProfiler\media\transparent]]; -- not all flavors have this transparent icon
+            end
             iconMarkup = CreateSimpleTextureMarkup(iconTexture, 20, 20);
         elseif iconAtlas then
             iconMarkup = CreateAtlasMarkup(iconAtlas, 20, 20);

@@ -4,6 +4,7 @@
 ## Interface-Retail: @toc-version-retail@
 ## Interface-Classic: @toc-version-classic@
 ## Interface-Cata: @toc-version-cata@
+## Interface-Mists: @toc-version-mists@
 ## Notes: AddonProfiler is a pretty UI for blizzard's addon profiling stats.
 ## Author: Numy
 ## SavedVariables: AddonProfilerDB

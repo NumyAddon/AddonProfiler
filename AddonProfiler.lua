@@ -178,6 +178,9 @@ function NAP:Init()
             self.PLAYER_REGEN_ENABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_ENABLED', self.PLAYER_REGEN_ENABLED);
         end
 
+        if C_AddOns.IsAddOnLoaded('BlizzMove') then
+            self:RegisterIntoBlizzMove();
+        end
         self:SwitchMode(self.db.mode, true);
         if self.db.enabled then
             self:EnableLogging();
@@ -358,9 +361,6 @@ function NAP:ADDON_LOADED(addonName)
         self:InitDB();
         self:InitUI();
         self:InitMinimapButton();
-    end
-    if 'BlizzMove' == addonName then
-        self:RegisterIntoBlizzMove();
     end
     if not self.addons[addonName] then return end
 

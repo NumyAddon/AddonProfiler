@@ -1351,7 +1351,8 @@ function NAP:InitUI()
 
                 local clampDistance = 40
                 local clampWidth = width - clampDistance
-                self:SetClampRectInsets(clampWidth, -clampWidth, 0, 0)
+                local _, _, top, bottom = self:GetClampRectInsets()
+                self:SetClampRectInsets(clampWidth, -clampWidth, top or 0, bottom or 0)
             end
             display:UpdateWidth()
 

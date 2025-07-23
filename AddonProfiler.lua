@@ -1449,7 +1449,6 @@ function NAP:InitUI()
         do
             titleBar:SetPoint("TOPLEFT", 0, 0)
             titleBar:SetPoint("BOTTOMRIGHT", display, "TOPRIGHT", 0, -32)
-            titleBar:Init(display)
         end
 
         local settings = CreateFrame("DropdownButton", nil, display);

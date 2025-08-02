@@ -548,7 +548,8 @@ function NAP:PLAYER_REGEN_ENABLED()
 end
 
 function NAP:ENCOUNTER_START(encounterID, encounterName, difficultyID, _)
-    if (select(2, GetDifficultyInfo(difficultyID)) ~= 'raid') then return; end
+    local instanceType = select(2, GetDifficultyInfo(difficultyID));
+    if (instanceType ~= 'raid' and instanceType ~= 'party') then return; end
     if self.db.mode == MODE_PERFORMANCE then
         self.encounterPeakMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
     end
@@ -561,7 +562,8 @@ function NAP:ENCOUNTER_START(encounterID, encounterName, difficultyID, _)
 end
 
 function NAP:ENCOUNTER_END(encounterID, _, difficultyID, _, success)
-    if (select(2, GetDifficultyInfo(difficultyID)) ~= 'raid') then return; end
+    local instanceType = select(2, GetDifficultyInfo(difficultyID));
+    if (instanceType ~= 'raid' and instanceType ~= 'party') then return; end
     local snapshot = self.encounterSnapshots[#self.encounterSnapshots];
     if not snapshot or snapshot.encounterID ~= encounterID then
         self:Print('Encounter ended without matching encounter start');
@@ -1611,8 +1613,8 @@ function NAP:InitUI()
                     option:SetEnabled(timeRangeTypeAllowed);
                 end
 
-                local encounter = rootDescription:CreateRadio("Raid Encounters", isTypeSelected, selectType, HISTORY_TYPE_ENCOUNTER);
-                encounter:SetTitleAndTextTooltip("Raid Encounters", "Show addon performance during a raid fight.");
+                local encounter = rootDescription:CreateRadio("Encounters", isTypeSelected, selectType, HISTORY_TYPE_ENCOUNTER);
+                encounter:SetTitleAndTextTooltip("Encounters", "Show addon performance during a raid/dungeon fight.");
                 local latestIndex = #NAP.encounterSnapshots;
                 if NAP.encounterSnapshots[latestIndex] and not NAP.encounterSnapshots[latestIndex].snapshot.isComplete then -- encounter is still in progress
                     latestIndex = latestIndex - 1;

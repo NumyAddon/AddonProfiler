@@ -19,7 +19,7 @@ NAP.eventFrame = CreateFrame('Frame');
 
 _G.NumyAddonProfiler = NAP;
 
-local msOptions = {1, 5, 10, 50, 100, 500, 1000};
+local msOptions = { 1, 5, 10, 50, 100, 500, 1000 };
 
 -- the metrics that can be fake reset, since they're just incremental
 local resettableMetrics = {
@@ -52,7 +52,7 @@ local HISTORY_TYPE_COMBAT = 'combat';
 local HISTORY_TYPE_ENCOUNTER = 'encounter';
 local HISTORY_TYPE_TIME_RANGE = 'timeRange';
 local HISTORY_LATEST = -1;
-local HISTORY_TIME_RANGES = {5, 15, 30, 60, 120, 300, 600} -- 5sec - 10min
+local HISTORY_TIME_RANGES = { 5, 15, 30, 60, 120, 300, 600 } -- 5sec - 10min
 NAP.currentHistorySelection = {
     type = HISTORY_TYPE_TIME_RANGE,
     timeRange = 30,
@@ -131,8 +131,8 @@ function NAP:Init()
         end
         local iconMarkup;
         if iconTexture then
-            if iconTexture == '982414' then
-                iconTexture = [[Interface\Addons\!!AddonProfiler\media\transparent]]; -- not all flavors have this transparent icon
+            if iconTexture == '982414' then -- not all flavors have this transparent icon
+                iconTexture = [[Interface\Addons\!!AddonProfiler\media\transparent]];
             end
             iconMarkup = CreateSimpleTextureMarkup(iconTexture, 20, 20);
         elseif iconAtlas then
@@ -176,6 +176,7 @@ function NAP:Init()
             self.ENCOUNTER_END = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'ENCOUNTER_END', self.ENCOUNTER_END);
             self.PLAYER_REGEN_DISABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_DISABLED', self.PLAYER_REGEN_DISABLED);
             self.PLAYER_REGEN_ENABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_ENABLED', self.PLAYER_REGEN_ENABLED);
+            self.GetElelementDataForAddon = NumyProfiler:Wrap(thisAddonName, 'ProfilerCord', 'GetElementDataForAddon', self.GetElelementDataForAddon);
         end
 
         if C_AddOns.IsAddOnLoaded('BlizzMove') then
@@ -285,6 +286,7 @@ function NAP:SlashCommand(message)
     end
 end
 
+-- these values should not be changed, they're persistent in SVs to remember whether they're toggled on or off
 local HEADER_IDS = {
     addonTitle = "addonTitle",
     encounterAvgMs = "encounterAvgMs",
@@ -348,6 +350,7 @@ function NAP:InitDB()
         minimap = {
             hide = false,
         },
+        pinnedAddons = {},
     };
     for key, value in pairs(defaults) do
         if self.db[key] == nil then
@@ -764,15 +767,43 @@ function NAP:PrepareFilteredData(forceUpdate)
         return nil;
     end
 
-    t_wipe(self.filteredData);
     self.dataProvider = nil;
     self.minTimeStamp = minTimestamp;
     self.prevMatch = self.curMatch;
     self.prevHistoryType = historyType;
     self.prevHistoryIndex = historyIndex;
 
-    local withinHistory = {};
+    local filteredData, displayNothing, bucketsWithinHistory, overallSnapshotOverrides = self:CollectData(self.loadedAddons, self.curMatch);
+
+    self.ProfilerFrame.NoDataText:SetShown(displayNothing);
+
+    self.dataProvider = CreateDataProvider(filteredData)
+    if self.sortComparator then
+        self.dataProvider:SetSortComparator(self.sortComparator)
+    end
+
+    return bucketsWithinHistory, overallSnapshotOverrides;
+end
+
+--- @param addons table<string, boolean> # list of addons to get data for
+--- @param addonTitleFilter string? # optional filter for addon titles
+--- @return NAP_ElementData[] filteredData
+--- @return boolean displayNothing
+--- @return table<NAP_Bucket, number>? bucketsWithinHistory
+--- @return table|nil overallSnapshotOverrides
+function NAP:CollectData(addons, addonTitleFilter)
+    local now = self.frozenAt or GetTime();
+
+    local historyType, historyIndex = self:GetActiveHistoryRange();
+    local timestampOffset = 0;
+    if historyType == HISTORY_TYPE_TIME_RANGE and historyIndex then
+        timestampOffset = historyIndex;
+    end
+    local minTimestamp = now - timestampOffset;
+
+    local withinHistory;
     if HISTORY_TYPE_TIME_RANGE == historyType then
+        withinHistory = {};
         for _, bucket in ipairs(self.snapshots.buckets) do
             if bucket.tickMap and bucket.tickMap[bucket.curTickIndex] and bucket.tickMap[bucket.curTickIndex] > minTimestamp then
                 for tickIndex, timestamp in pairs(bucket.tickMap) do
@@ -810,7 +841,7 @@ function NAP:PrepareFilteredData(forceUpdate)
         end
     end
     local overallSnapshotOverrides;
-    self.ProfilerFrame.NoDataText:SetShown(displayNothing);
+    local filteredData = {};
     if displayNothing then
         overallSnapshotOverrides = {
             encounterAvg = 0,
@@ -823,9 +854,6 @@ function NAP:PrepareFilteredData(forceUpdate)
             endMetrics = {},
         };
     else
-        if snapshot and snapshot.bucket then
-            withinHistory[snapshot.bucket] = 1;
-        end
         if snapshot then
             overallSnapshotOverrides = {
                 encounterAvg = snapshot.bossAvg[TOTAL_ADDON_METRICS_KEY] or 0,
@@ -840,9 +868,9 @@ function NAP:PrepareFilteredData(forceUpdate)
         end
         local overallStats = self:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory, nil, overallSnapshotOverrides);
 
-        for addonName in pairs(self.loadedAddons) do
+        for addonName in pairs(addons) do
             local info = self.addons[addonName];
-            if info.title:lower():match(self.curMatch) then
+            if not addonTitleFilter or info.title:lower():match(addonTitleFilter) then
                 local snapshotOverrides;
                 if snapshot then
                     snapshotOverrides = {
@@ -856,22 +884,17 @@ function NAP:PrepareFilteredData(forceUpdate)
                         endMetrics = snapshot.endMetrics[addonName] or {},
                     };
                 end
-                t_insert(self.filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
+                t_insert(filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
             end
         end
     end
 
-    self.dataProvider = CreateDataProvider(self.filteredData)
-    if self.sortComparator then
-        self.dataProvider:SetSortComparator(self.sortComparator)
-    end
-
-    return withinHistory, overallSnapshotOverrides;
+    return filteredData, displayNothing, withinHistory, overallSnapshotOverrides
 end
 
 --- @param addonName string
 --- @param info NAP_AddonInfo?
---- @param bucketsWithinHistory table<NAP_Bucket, number>
+--- @param bucketsWithinHistory nil|table<NAP_Bucket, number>
 --- @param overallStats NAP_ElementData?
 --- @param snapshotOverrides nil|{ encounterAvg: number, recentMs: number, peakTime: number, totalMs: number, numberOfTicks: number, applicationTotalMs: number, startMetrics: table<string, number>, endMetrics: table<string, number> }
 --- @return NAP_ElementData
@@ -889,6 +912,13 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
         totalMs = 0,
         numberOfTicks = 0,
         applicationTotalMs = 0,
+        over1Ms = 0,
+        over5Ms = 0,
+        over10Ms = 0,
+        over50Ms = 0,
+        over100Ms = 0,
+        over500Ms = 0,
+        over1000Ms = 0,
     };
     if TOTAL_ADDON_METRICS_KEY == addonName then
         data.encounterAvg = snapshotOverrides and snapshotOverrides.encounterAvg or C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_EncounterAverageTime);
@@ -897,24 +927,13 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
         data.encounterAvg = snapshotOverrides and snapshotOverrides.encounterAvg or C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_EncounterAverageTime);
         data.recentMs = snapshotOverrides and snapshotOverrides.recentMs or C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_RecentAverageTime);
     end
-    for _, ms in pairs(msOptions) do
-        data[msOptionFieldMap[ms]] = 0;
-    end
     local now = self.frozenAt or GetTime();
-    local historyType = self:GetActiveHistoryRange();
-    if
-        HISTORY_TYPE_SINCE_RESET == historyType
-        or HISTORY_TYPE_ENCOUNTER == historyType
-        or HISTORY_TYPE_COMBAT == historyType
-    then
+    if not bucketsWithinHistory then
         data.applicationTotalMs = (snapshotOverrides and snapshotOverrides.applicationTotalMs) or (now - self.resetTime) * 1000;
         local currentMetrics = (snapshotOverrides and snapshotOverrides.endMetrics) or (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName);
         local baselineMetrics = (snapshotOverrides and snapshotOverrides.startMetrics) or self.resetBaselineMetrics[addonName];
-        for ms in pairs(msMetricMap) do
-            local currentMetric = currentMetrics[ms] or 0;
-            local baselineMetric = baselineMetrics[ms] or 0;
-            local increase = currentMetric - baselineMetric;
-            data[msOptionFieldMap[ms]] = increase;
+        for field, ms in pairs(msOptionFieldMap) do
+            data[field] = (currentMetrics[ms] or 0) - (baselineMetrics[ms] or 0);
         end
         data.peakTime = snapshotOverrides and snapshotOverrides.peakTime or self.peakMs[addonName];
         data.totalMs = (snapshotOverrides and snapshotOverrides.totalMs) or self.totalMs[addonName];
@@ -922,6 +941,8 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
     else
         local firstTickTime = now;
         local lastTickTime = 0;
+        local peakTime = 0;
+        local totalMs = 0;
         for bucket, startingTickIndex in pairs(bucketsWithinHistory) do
             data.numberOfTicks = data.numberOfTicks + ((bucket.curTickIndex - startingTickIndex) + 1);
             if bucket.tickMap[startingTickIndex] < firstTickTime then
@@ -930,13 +951,14 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
             if bucket.tickMap[bucket.curTickIndex] > lastTickTime then
                 lastTickTime = bucket.tickMap[bucket.curTickIndex];
             end
+            local lastTick = bucket.lastTick[addonName];
             for tickIndex = startingTickIndex, bucket.curTickIndex do
-                local tickMs = bucket.lastTick[addonName] and bucket.lastTick[addonName][tickIndex];
+                local tickMs = lastTick and lastTick[tickIndex];
                 if tickMs and tickMs > 0 then
-                    if tickMs > data.peakTime then
-                        data.peakTime = tickMs;
+                    if tickMs > peakTime then
+                        peakTime = tickMs;
                     end
-                    data.totalMs = data.totalMs + tickMs;
+                    totalMs = totalMs + tickMs;
                     -- hardcoded for performance
                     if tickMs > 1 then
                         data.over1Ms = data.over1Ms + 1;
@@ -963,6 +985,8 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
             end
         end
 
+        data.peakTime = peakTime;
+        data.totalMs = totalMs;
         data.applicationTotalMs = (lastTickTime - firstTickTime) * 1000;
     end
     data.averageMs = data.numberOfTicks > 0 and (data.totalMs / data.numberOfTicks) or 0; -- let's not divide by 0 :)
@@ -1000,7 +1024,6 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
 end
 
 function NAP:InitUI()
-    self.filteredData = {};
     self.dataProvider = nil;
     self.curMatch = ".+"
 
@@ -1015,7 +1038,7 @@ function NAP:InitUI()
     local whiteColorFormat = "|cfff8f8f2%s|r";
 
     local MEMORY_FORMAT = function(val)
-        if ( val > 1000 ) then
+        if val > 1000 then
             val = val / 1000;
 
             return ('%.2f %s'):format(val, mbText);
@@ -1227,12 +1250,13 @@ function NAP:InitUI()
         };
     end
 
+    local makeStandaloneRow
+    local UPDATE_INTERVAL = 1
+    local ROW_HEIGHT = 20
     -------------
     -- DISPLAY --
     -------------
     do
-        local ROW_HEIGHT = 20
-        local UPDATE_INTERVAL = 1
         local continuousUpdate = true
 
         --- @class NAP_Display: Frame, ButtonFrameTemplate
@@ -1245,6 +1269,7 @@ function NAP:InitUI()
                     activeSort, activeOrder = sort, order
                     self:UpdateSortComparator()
                 end
+
                 function display:GetActiveSort()
                     local sort, order = activeSort, activeOrder
                     if NAP.db.mode == MODE_PASSIVE and not COLUMN_INFO[sort].availableInPassiveMode then
@@ -1262,6 +1287,7 @@ function NAP:InitUI()
                     NAP.dataProvider:SetSortComparator(NAP.sortComparator)
                 end
             end
+
             display:UpdateSortComparator()
 
             function display:OnUpdate(elapsed)
@@ -1273,7 +1299,7 @@ function NAP:InitUI()
 
             function display:DoUpdate(force)
                 local bucketsWithinHistory, overallSnapshotOverrides = NAP:PrepareFilteredData(force)
-                self.TotalRow:Update(bucketsWithinHistory, overallSnapshotOverrides)
+                self.TotalRow:Update(nil, bucketsWithinHistory, overallSnapshotOverrides)
 
                 local perc = self.ScrollBox:GetScrollPercentage()
                 self.ScrollBox:Flush()
@@ -1311,6 +1337,7 @@ function NAP:InitUI()
                 end
                 table.sort(display.activeColumns, function(a, b) return a.order < b.order end)
             end
+
             display:RefreshActiveColumns()
 
             display.defaultHeight = 650
@@ -1356,6 +1383,7 @@ function NAP:InitUI()
                 local _, _, top, bottom = self:GetClampRectInsets()
                 self:SetClampRectInsets(clampWidth, -clampWidth, top or 0, bottom or 0)
             end
+
             display:UpdateWidth()
 
             ButtonFrameTemplate_HidePortrait(display)
@@ -1433,6 +1461,7 @@ function NAP:InitUI()
                         display:UnregisterEvent("PLAYER_REGEN_ENABLED");
                     end
                 end
+
                 display:UpdateCloseOnEsc();
                 display:SetScript("OnEvent", function(_, event)
                     local name = display:GetName();
@@ -1466,13 +1495,14 @@ function NAP:InitUI()
                 function settings:OnButtonStateChanged()
                     local atlas = self.atlasKey;
                     if self:IsDownOver() or self:IsOver() then
-                        atlas = atlas.."-hover";
+                        atlas = atlas .. "-hover";
                     elseif self:IsDown() then
-                        atlas = atlas.."-pressed";
+                        atlas = atlas .. "-pressed";
                     end
 
                     self:GetNormalTexture():SetAtlas(atlas, TextureKitConstants.IgnoreAtlasSize);
                 end
+
                 settings:OnLoad();
                 settings:HookScript("OnEnter", settings.OnEnter);
                 settings:HookScript("OnLeave", settings.OnLeave);
@@ -1557,6 +1587,7 @@ function NAP:InitUI()
                     historyMenu:OverrideText(SINCE_RESET);
                 end
             end
+
             display:UpdateHistoryRangeText();
 
             local function onAfterSelection()
@@ -1725,7 +1756,7 @@ function NAP:InitUI()
                     local headerOptions = {}
                     for ID, info in pairs(COLUMN_INFO) do
                         if ID ~= "addonTitle" and (NAP.db.mode ~= MODE_PASSIVE or info.availableInPassiveMode) then
-                            t_insert(headerOptions, { info.title, info })
+                            t_insert(headerOptions, { info.title, info, })
                         end
                     end
                     table.sort(headerOptions, function(a, b) return a[2].order < b[2].order end)
@@ -1826,12 +1857,21 @@ function NAP:InitUI()
                     GameTooltip:AddDoubleLine("Number of frames:", RAW_FORMAT(data.numberOfTicks), 1, 0.92, 0, 1, 1, 1)
                     GameTooltip:AddDoubleLine("Memory Usage:", MEMORY_FORMAT(data.memoryUsage), 1, 0.92, 0, 1, 1, 1)
                     GameTooltip:AddLine("|cnNORMAL_FONT_COLOR:Note:|r Memory usage is updated only when opening the UI.", 1, 1, 1, true)
+
+                    GameTooltip_AddInstructionLine(GameTooltip, "SHIFT+" .. CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. " to pin/unpin this addon");
+
                     GameTooltip:Show()
                 end
             end
 
             function rowMixin:OnLeave()
                 GameTooltip:Hide()
+            end
+
+            function rowMixin:OnClick(mouseButton)
+                if mouseButton == "LeftButton" and IsShiftKeyDown() then
+                    NAP.PinContainer:ToggleAddonPin(self:GetElementData().addonName)
+                end
             end
 
             function rowMixin:UpdateColumns()
@@ -1858,13 +1898,14 @@ function NAP:InitUI()
                 end
             end
 
-            --- @param row BUTTON|NAP_RowMixin
+            --- @param row NAP_RowMixin
             initRow = function(row)
                 Mixin(row, rowMixin)
                 row:SetHighlightTexture("Interface\\BUTTONS\\WHITE8X8")
                 row:GetHighlightTexture():SetVertexColor(0.1, 0.1, 0.1, 0.75)
                 row:SetScript("OnEnter", row.OnEnter)
                 row:SetScript("OnLeave", row.OnLeave)
+                row:SetScript("OnClick", row.OnClick)
 
                 local function init()
                     return row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -1882,29 +1923,51 @@ function NAP:InitUI()
                 bg:SetPoint("BOTTOMRIGHT")
                 row.BG = bg
             end
+
+            --- @param parent Frame? # defaults to UIParent
+            --- @return NAP_StandloneRow
+            makeStandaloneRow = function(parent)
+                --- @class NAP_StandloneRow: NAP_RowMixin
+                local row = CreateFrame("Button", nil, parent or UIParent)
+                initRow(row)
+
+                function row:Init(addonName)
+                    self.addonName = addonName
+                    self.addonInfo = addonName == TOTAL_ADDON_METRICS_KEY
+                        and { title = "|cnNORMAL_FONT_COLOR:Addon Total|r", notes = "Stats for all addons combined", }
+                        or NAP.addons[addonName]
+                end
+
+                function row:GetElementData()
+                    return self.data
+                end
+
+                --- @param elementData NAP_ElementData?
+                --- @param bucketsWithinHistory nil|table<NAP_Bucket, number>
+                --- @param overallSnapshotOverrides nil|{ encounterAvg: number, recentMs: number, peakTime: number, totalMs: number, numberOfTicks: number, applicationTotalMs: number, startMetrics: table<string, number>, endMetrics: table<string, number> }
+                function row:Update(elementData, bucketsWithinHistory, overallSnapshotOverrides)
+                    if elementData then
+                        self.data = elementData
+                    elseif bucketsWithinHistory then
+                        self.data = NAP:GetElelementDataForAddon(self.addonName, self.addonInfo, bucketsWithinHistory, nil, overallSnapshotOverrides)
+                    end
+                    self:UpdateColumns()
+                    for columnText in self.columnPool:EnumerateActive() do
+                        local column = columnText.column
+                        local value = column.textFunc and column.textFunc(self.data) or self.data[column.textKey]
+                        columnText:SetText(column.textFormatter(value))
+                    end
+                end
+
+                return row
+            end
         end
-        --- @class NAP_TotalRow: NAP_RowMixin
-        local totalRow = CreateFrame("Button", nil, display)
+
+        local totalRow = makeStandaloneRow(display)
         display.TotalRow = totalRow
         do
-            initRow(totalRow)
+            totalRow:Init(TOTAL_ADDON_METRICS_KEY)
             totalRow:SetPoint("TOPLEFT", display.Headers, "BOTTOMLEFT", 5, -1)
-
-            function totalRow:GetElementData()
-                return self.data
-            end
-
-            function totalRow:Update(bucketsWithinHistory, overallSnapshotOverrides)
-                if bucketsWithinHistory then
-                    self.data = NAP:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, { title = "|cnNORMAL_FONT_COLOR:Addon Total|r", notes = "Stats for all addons combined" }, bucketsWithinHistory, nil, overallSnapshotOverrides)
-                end
-                self:UpdateColumns()
-                for columnText in self.columnPool:EnumerateActive() do
-                    local column = columnText.column
-                    local value = column.textFunc and column.textFunc(self.data) or self.data[column.textKey]
-                    columnText:SetText(column.textFormatter(value))
-                end
-            end
         end
 
         local view = CreateScrollBoxListLinearView(2, 0, 2, 2, 2)
@@ -2177,6 +2240,162 @@ function NAP:InitUI()
             background:SetAllPoints()
         end
     end
+
+    -------------------
+    -- PIN CONTAINER --
+    -------------------
+    do
+        local pinContainer = CreateFrame("Frame", "NumyAddonProfiler_PinContainer", UIParent);
+        self.PinContainer = pinContainer;
+        do
+            pinContainer:Hide();
+            pinContainer:SetFrameStrata("DIALOG");
+            pinContainer:SetMovable(true);
+            pinContainer:SetToplevel(true);
+            pinContainer:SetSize(10, 10);
+            pinContainer:SetPoint("CENTER", UIParent, "CENTER", 10, -10);
+
+            function pinContainer:UpdateClampInsets()
+                local width = self:GetWidth();
+                local clampDistance = 40
+                local clampWidth = width - clampDistance
+                local _, _, top, bottom = self:GetClampRectInsets()
+                self:SetClampRectInsets(clampWidth, -clampWidth, top or 0, bottom or 0)
+            end
+            pinContainer:UpdateClampInsets();
+        end
+
+        local bg = pinContainer:CreateTexture(nil, "BACKGROUND");
+        bg:SetColorTexture(0.1, 0.1, 0.1, 0.75);
+        bg:SetAllPoints();
+
+        local header = makeStandaloneRow(pinContainer);
+        pinContainer.Header = header;
+        do
+            header:SetPoint("TOPLEFT", pinContainer, "TOPLEFT", 0, 0);
+            header:Show();
+            header.BG:Show();
+            header.BG:SetColorTexture(0.1, 0.1, 0.1, 0.75);
+            header:GetHighlightTexture():SetTexture(nil);
+        end
+
+        local mover = CreateFrame("Frame", nil, header, "PanelDragBarTemplate");
+        pinContainer.Mover = mover;
+        mover:SetAllPoints();
+        mover:SetPropagateMouseMotion(true);
+
+        pinContainer.rowPool = CreateUnsecuredRegionPoolInstance(nil, function() return makeStandaloneRow(pinContainer); end);
+        pinContainer.pinnedAddons = {};
+        pinContainer.addonOrder = {};
+        pinContainer.elapsed = UPDATE_INTERVAL;
+
+        function pinContainer:ToggleAddonPin(addonName)
+            if self.pinnedAddons[addonName] then
+                self:UnpinAddon(addonName);
+            else
+                self:PinAddon(addonName);
+            end
+        end
+
+        function pinContainer:PinAddon(addonName)
+            if self.pinnedAddons[addonName] or not NAP.addons[addonName] then
+                return;
+            end
+            --- @type NAP_StandloneRow
+            local row = self.rowPool:Acquire();
+            row:Init(addonName);
+            row:Hide();
+            self.pinnedAddons[addonName] = row;
+            t_insert(self.addonOrder, addonName);
+
+            NAP.db.pinnedAddons[addonName] = true;
+
+            self.elapsed = UPDATE_INTERVAL;
+            if not self:IsShown() then
+                self:Show();
+            end
+        end
+
+        function pinContainer:UnpinAddon(addonName)
+            if not self.pinnedAddons[addonName] then
+                return; -- not pinned
+            end
+            self.rowPool:Release(self.pinnedAddons[addonName]);
+            self.pinnedAddons[addonName] = nil;
+            tDeleteItem(self.addonOrder, addonName);
+
+            NAP.db.pinnedAddons[addonName] = nil;
+
+            self.elapsed = UPDATE_INTERVAL;
+            if not next(self.pinnedAddons) then
+                self:Hide();
+            end
+        end
+
+        function pinContainer:OnUpdate(elapsed)
+            self.elapsed = (self.elapsed or 0) + elapsed;
+            if self.elapsed >= UPDATE_INTERVAL then
+                self:DoUpdate();
+            end
+        end
+
+        function pinContainer:DoUpdate()
+            local filteredData, displayNothing = NAP:CollectData(self.pinnedAddons);
+            if not filteredData or displayNothing then
+                -- what to do? show an overlay?
+                return;
+            end
+
+            local elementDataByAddon = {}
+            for _, elementData in pairs(filteredData) do
+                elementDataByAddon[elementData.addonName] = elementData;
+            end
+
+            self.Header:UpdateColumns();
+            for columnText in self.Header.columnPool:EnumerateActive() do
+                local column = columnText.column
+                columnText:SetText(column.title)
+            end
+
+            for i, addonName in ipairs(self.addonOrder) do
+                --- @type NAP_StandloneRow?
+                local row = self.pinnedAddons[addonName];
+                if row then
+                    local elementData = elementDataByAddon[addonName];
+                    if elementData then
+                        row:Update(elementData);
+                        row:Show();
+                    else
+                        row:Hide();
+                    end
+                    row:SetPoint("TOPLEFT", pinContainer, "TOPLEFT", 0, -i * ROW_HEIGHT);
+                    self:SetWidth(row:GetWidth() + 5);
+                    self:SetHeight((1 + i) * ROW_HEIGHT + 5);
+                end
+            end
+            self:UpdateClampInsets();
+
+            self.elapsed = 0;
+        end
+
+        pinContainer:RegisterEvent("ADDON_LOADED");
+        function pinContainer:ADDON_LOADED(addonName)
+            if NAP.db.pinnedAddons[addonName] then
+                self:PinAddon(addonName);
+            end
+        end
+
+        for addonName in pairs(NAP.db.pinnedAddons) do
+            if C_AddOns.IsAddOnLoaded(addonName) then
+                pinContainer:PinAddon(addonName);
+            end
+        end
+
+        pinContainer:SetScript("OnUpdate", pinContainer.OnUpdate);
+        pinContainer:SetScript("OnEvent", function(self, event, ...)
+            self[event](self, ...);
+        end);
+    end
 end
 
 function NAP:IsLogging()
@@ -2188,7 +2407,6 @@ function NAP:EnableLogging()
     self.frozenAt = nil
     self.frozenMetrics = nil
     self:ResetMetrics()
-    t_wipe(self.filteredData)
     self.dataProvider = nil
 
     self.collectData = true;
@@ -2235,6 +2453,11 @@ function NAP:RegisterIntoBlizzMove()
                         SubFrames = {
                             [self.ProfilerFrame:GetName() .. '.TitleBar'] = {},
                             [self.ProfilerFrame:GetName() .. '.Headers'] = {},
+                        },
+                    },
+                    [self.PinContainer:GetName()] = {
+                        SubFrames = {
+                            [self.PinContainer:GetName() .. '.Mover'] = {},
                         },
                     },
                 },

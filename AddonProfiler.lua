@@ -176,7 +176,7 @@ function NAP:Init()
             self.ENCOUNTER_END = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'ENCOUNTER_END', self.ENCOUNTER_END);
             self.PLAYER_REGEN_DISABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_DISABLED', self.PLAYER_REGEN_DISABLED);
             self.PLAYER_REGEN_ENABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_ENABLED', self.PLAYER_REGEN_ENABLED);
-            self.GetElelementDataForAddon = NumyProfiler:Wrap(thisAddonName, 'ProfilerCord', 'GetElementDataForAddon', self.GetElelementDataForAddon);
+            self.GetElelementDataForAddon = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'GetElementDataForAddon', self.GetElelementDataForAddon);
         end
 
         if C_AddOns.IsAddOnLoaded('BlizzMove') then
@@ -740,7 +740,7 @@ end
 
 --- @param forceUpdate boolean
 --- @return table<NAP_Bucket, number>? bucketsWithinHistory
---- @return table|nil overallSnapshotOverrides
+--- @return table|nil overallSnapshotOverrides # only nil if there's no update to the dataprovider
 function NAP:PrepareFilteredData(forceUpdate)
     local now = self.frozenAt or GetTime();
 
@@ -854,16 +854,31 @@ function NAP:CollectData(addons, addonTitleFilter)
             endMetrics = {},
         };
     else
+        local passiveMode = self.db.mode == MODE_PASSIVE;
+
         if snapshot then
+            local addonName = TOTAL_ADDON_METRICS_KEY
             overallSnapshotOverrides = {
-                encounterAvg = snapshot.bossAvg[TOTAL_ADDON_METRICS_KEY] or 0,
-                recentMs = snapshot.recentAvg[TOTAL_ADDON_METRICS_KEY] or 0,
-                peakTime = snapshot.peakTime[TOTAL_ADDON_METRICS_KEY] or 0,
-                totalMs = snapshot.total[TOTAL_ADDON_METRICS_KEY] or 0,
+                encounterAvg = snapshot.bossAvg[addonName] or 0,
+                recentMs = snapshot.recentAvg[addonName] or 0,
+                peakTime = snapshot.peakTime[addonName] or 0,
+                totalMs = snapshot.total[addonName] or 0,
                 numberOfTicks = snapshot.endTick - snapshot.startTick,
                 applicationTotalMs = (snapshot.endTime - snapshot.startTime) * 1000,
-                startMetrics = snapshot.startMetrics[TOTAL_ADDON_METRICS_KEY] or {},
-                endMetrics = snapshot.endMetrics[TOTAL_ADDON_METRICS_KEY] or {},
+                startMetrics = snapshot.startMetrics[addonName] or {},
+                endMetrics = snapshot.endMetrics[addonName] or {},
+            };
+        else
+            local addonName = TOTAL_ADDON_METRICS_KEY
+            overallSnapshotOverrides = {
+                encounterAvg = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_EncounterAverageTime),
+                recentMs = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_RecentAverageTime),
+                peakTime = passiveMode and C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_PeakTime) or self.peakMs[addonName],
+                totalMs = self.totalMs[addonName],
+                numberOfTicks = self.tickNumber - self.loadedAtTick[addonName],
+                applicationTotalMs = (now - self.resetTime) * 1000,
+                startMetrics = self.resetBaselineMetrics[addonName],
+                endMetrics = (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName),
             };
         end
         local overallStats = self:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory, nil, overallSnapshotOverrides);
@@ -883,6 +898,17 @@ function NAP:CollectData(addons, addonTitleFilter)
                         startMetrics = snapshot.startMetrics[addonName] or {},
                         endMetrics = snapshot.endMetrics[addonName] or {},
                     };
+                else
+                    snapshotOverrides = {
+                        encounterAvg = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_EncounterAverageTime),
+                        recentMs = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_RecentAverageTime),
+                        peakTime = passiveMode and C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_PeakTime) or self.peakMs[addonName],
+                        totalMs = self.totalMs[addonName],
+                        numberOfTicks = self.tickNumber - self.loadedAtTick[addonName],
+                        applicationTotalMs = (now - self.resetTime) * 1000,
+                        startMetrics = self.resetBaselineMetrics[addonName],
+                        endMetrics = (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName),
+                    };
                 end
                 t_insert(filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
             end
@@ -896,22 +922,21 @@ end
 --- @param info NAP_AddonInfo?
 --- @param bucketsWithinHistory nil|table<NAP_Bucket, number>
 --- @param overallStats NAP_ElementData?
---- @param snapshotOverrides nil|{ encounterAvg: number, recentMs: number, peakTime: number, totalMs: number, numberOfTicks: number, applicationTotalMs: number, startMetrics: table<string, number>, endMetrics: table<string, number> }
+--- @param snapshotOverrides { encounterAvg: number, recentMs: number, peakTime: number, totalMs: number, numberOfTicks: number, applicationTotalMs: number, startMetrics: table<string, number>, endMetrics: table<string, number> }
 --- @return NAP_ElementData
 function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, overallStats, snapshotOverrides)
     --- @type NAP_ElementData
-    --- @diagnostic disable-next-line: missing-fields
     local data = {
         addonName = addonName,
         addonTitle = info and info.title or '',
         addonNotes = info and info.notes or '',
         addonIcon = info and info.iconMarkup or '',
         memoryUsage = GetAddOnMemoryUsage(addonName),
-        peakTime = 0,
+        peakTime = snapshotOverrides.peakTime,
         averageMs = 0,
-        totalMs = 0,
-        numberOfTicks = 0,
-        applicationTotalMs = 0,
+        totalMs = snapshotOverrides.totalMs,
+        numberOfTicks = snapshotOverrides.numberOfTicks,
+        applicationTotalMs = snapshotOverrides.applicationTotalMs,
         over1Ms = 0,
         over5Ms = 0,
         over10Ms = 0,
@@ -919,27 +944,23 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
         over100Ms = 0,
         over500Ms = 0,
         over1000Ms = 0,
+        overMsSum = 0,
+        encounterAvg = snapshotOverrides.encounterAvg,
+        recentMs = snapshotOverrides.recentMs,
+        overallPeakTime = overallStats and overallStats.peakTime or 0,
+        overallEncounterAvg = overallStats and overallStats.encounterAvg or 0,
+        overallRecentMs = overallStats and overallStats.recentMs or 0,
+        overallTotalMs = overallStats and overallStats.totalMs or 0,
     };
-    if TOTAL_ADDON_METRICS_KEY == addonName then
-        data.encounterAvg = snapshotOverrides and snapshotOverrides.encounterAvg or C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_EncounterAverageTime);
-        data.recentMs = snapshotOverrides and snapshotOverrides.recentMs or C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_RecentAverageTime);
-    else
-        data.encounterAvg = snapshotOverrides and snapshotOverrides.encounterAvg or C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_EncounterAverageTime);
-        data.recentMs = snapshotOverrides and snapshotOverrides.recentMs or C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_RecentAverageTime);
-    end
-    local now = self.frozenAt or GetTime();
+
     if not bucketsWithinHistory then
-        data.applicationTotalMs = (snapshotOverrides and snapshotOverrides.applicationTotalMs) or (now - self.resetTime) * 1000;
-        local currentMetrics = (snapshotOverrides and snapshotOverrides.endMetrics) or (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName);
-        local baselineMetrics = (snapshotOverrides and snapshotOverrides.startMetrics) or self.resetBaselineMetrics[addonName];
+        local currentMetrics = snapshotOverrides.endMetrics;
+        local baselineMetrics = snapshotOverrides.startMetrics;
         for field, ms in pairs(msOptionFieldMap) do
             data[field] = (currentMetrics[ms] or 0) - (baselineMetrics[ms] or 0);
         end
-        data.peakTime = snapshotOverrides and snapshotOverrides.peakTime or self.peakMs[addonName];
-        data.totalMs = (snapshotOverrides and snapshotOverrides.totalMs) or self.totalMs[addonName];
-        data.numberOfTicks = (snapshotOverrides and snapshotOverrides.numberOfTicks) or (self.tickNumber - self.loadedAtTick[addonName]);
     else
-        local firstTickTime = now;
+        local firstTickTime = math.huge;
         local lastTickTime = 0;
         local peakTime = 0;
         local totalMs = 0;
@@ -991,33 +1012,21 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
     end
     data.averageMs = data.numberOfTicks > 0 and (data.totalMs / data.numberOfTicks) or 0; -- let's not divide by 0 :)
 
-    if self.db.mode == MODE_PASSIVE then
-        if TOTAL_ADDON_METRICS_KEY == addonName then
-            data.peakTime = (snapshotOverrides and snapshotOverrides.peakTime) or C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_PeakTime);
-        else
-            data.peakTime = (snapshotOverrides and snapshotOverrides.peakTime) or C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_PeakTime);
-        end
-    end
-
-    data.overMsSum = 0;
-    local previousGroupCount = 0;
-    for _, ms in ipairs_reverse(msOptions) do
-        data[msOptionFieldMap[ms]] = data[msOptionFieldMap[ms]] or 0;
-        local count = data[msOptionFieldMap[ms]];
-        data.overMsSum = data.overMsSum + ((count - previousGroupCount) * ms);
-        previousGroupCount = count;
-    end
+    data.overMsSum = (
+        data.over1000Ms * 1000
+        + (data.over500Ms - data.over1000Ms) * 500
+        + (data.over100Ms - data.over500Ms) * 100
+        + (data.over50Ms - data.over100Ms) * 50
+        + (data.over10Ms - data.over50Ms) * 10
+        + (data.over5Ms - data.over10Ms) * 5
+        + (data.over1Ms - data.over5Ms) * 1
+    );
 
     if TOTAL_ADDON_METRICS_KEY == addonName then
         data.overallPeakTime = data.peakTime;
         data.overallEncounterAvg = data.encounterAvg;
         data.overallRecentMs = data.recentMs;
         data.overallTotalMs = data.totalMs;
-    elseif overallStats then
-        data.overallPeakTime = overallStats.peakTime;
-        data.overallEncounterAvg = overallStats.encounterAvg;
-        data.overallRecentMs = overallStats.recentMs;
-        data.overallTotalMs = overallStats.totalMs;
     end
 
     return data;
@@ -1299,24 +1308,26 @@ function NAP:InitUI()
 
             function display:DoUpdate(force)
                 local bucketsWithinHistory, overallSnapshotOverrides = NAP:PrepareFilteredData(force)
-                self.TotalRow:Update(nil, bucketsWithinHistory, overallSnapshotOverrides)
+                if overallSnapshotOverrides then
+                    self.TotalRow:Update(nil, bucketsWithinHistory, overallSnapshotOverrides)
 
-                local perc = self.ScrollBox:GetScrollPercentage()
-                self.ScrollBox:Flush()
+                    local perc = self.ScrollBox:GetScrollPercentage()
+                    self.ScrollBox:Flush()
 
-                if NAP.dataProvider then
-                    self.ScrollBox:SetDataProvider(NAP.dataProvider)
-                    self.ScrollBox:SetScrollPercentage(perc)
+                    if NAP.dataProvider then
+                        self.ScrollBox:SetDataProvider(NAP.dataProvider)
+                        self.ScrollBox:SetScrollPercentage(perc)
+                    end
+
+                    self.Stats:Update()
                 end
-
-                self.Stats:Update()
 
                 self.elapsed = 0
             end
 
             function display:OnShow()
                 UpdateAddOnMemoryUsage()
-                self:DoUpdate()
+                self:DoUpdate(true)
 
                 if continuousUpdate then
                     self:SetScript("OnUpdate", self.OnUpdate)
@@ -1948,7 +1959,7 @@ function NAP:InitUI()
                 function row:Update(elementData, bucketsWithinHistory, overallSnapshotOverrides)
                     if elementData then
                         self.data = elementData
-                    elseif bucketsWithinHistory then
+                    else
                         self.data = NAP:GetElelementDataForAddon(self.addonName, self.addonInfo, bucketsWithinHistory, nil, overallSnapshotOverrides)
                     end
                     self:UpdateColumns()

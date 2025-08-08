@@ -1952,6 +1952,7 @@ function NAP:InitUI()
                         self.data = NAP:GetElelementDataForAddon(self.addonName, self.addonInfo, bucketsWithinHistory, nil, overallSnapshotOverrides)
                     end
                     self:UpdateColumns()
+                    if not self.data then return end
                     for columnText in self.columnPool:EnumerateActive() do
                         local column = columnText.column
                         local value = column.textFunc and column.textFunc(self.data) or self.data[column.textKey]

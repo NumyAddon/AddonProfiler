@@ -956,7 +956,7 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
     if not bucketsWithinHistory then
         local currentMetrics = snapshotOverrides.endMetrics;
         local baselineMetrics = snapshotOverrides.startMetrics;
-        for field, ms in pairs(msOptionFieldMap) do
+        for ms, field in pairs(msOptionFieldMap) do
             data[field] = (currentMetrics[ms] or 0) - (baselineMetrics[ms] or 0);
         end
     else
@@ -1326,13 +1326,14 @@ function NAP:InitUI()
             end
 
             function display:OnShow()
-                UpdateAddOnMemoryUsage()
-                self:DoUpdate(true)
-
+                self.ProfilingDisabledWarning:SetShown(not C_AddOnProfiler.IsEnabled())
                 if continuousUpdate then
                     self:SetScript("OnUpdate", self.OnUpdate)
                 end
-                self.ProfilingDisabledWarning:SetShown(not C_AddOnProfiler.IsEnabled())
+                RunNextFrame(function()
+                    UpdateAddOnMemoryUsage()
+                end)
+                self:DoUpdate(true)
             end
 
             function display:OnHide()
@@ -2227,6 +2228,7 @@ function NAP:InitUI()
         display.ProfilingDisabledWarning = CreateFrame("Frame", nil, display)
         do
             local warning = display.ProfilingDisabledWarning
+            warning:Hide()
             warning:SetFrameLevel(500)
             warning:SetAllPoints(display.ScrollBox)
             local warningText = warning:CreateFontString(nil, "OVERLAY", "GameFontNormal")

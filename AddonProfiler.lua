@@ -964,6 +964,7 @@ function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, ove
         local lastTickTime = 0;
         local peakTime = 0;
         local totalMs = 0;
+        data.numberOfTicks = 0;
         for bucket, startingTickIndex in pairs(bucketsWithinHistory) do
             data.numberOfTicks = data.numberOfTicks + ((bucket.curTickIndex - startingTickIndex) + 1);
             if bucket.tickMap[startingTickIndex] < firstTickTime then

@@ -655,20 +655,22 @@ function NAP:CloseSnapshot(snapshot)
             bucket.tickMap[tickIndex] = lastBucket.tickMap[index];
         end
         for addonName, lastTicks in pairs(lastBucket.lastTick) do
-            snapshot.peakTime[addonName] = 0;
-            local newTicks = {};
-            local tickIndex = 0;
-            for index = snapshot.bucketStartTick, lastBucket.curTickIndex do
-                tickIndex = tickIndex + 1;
-                local lastTick = lastTicks[index];
-                if lastTick then
-                    newTicks[tickIndex] = lastTicks[index];
-                    if lastTicks[index] > snapshot.peakTime[addonName] then
-                        snapshot.peakTime[addonName] = lastTicks[index];
+            RunNextFrame(function()
+                snapshot.peakTime[addonName] = 0;
+                local newTicks = {};
+                local tickIndex = 0;
+                for index = snapshot.bucketStartTick, lastBucket.curTickIndex do
+                    tickIndex = tickIndex + 1;
+                    local lastTick = lastTicks[index];
+                    if lastTick then
+                        newTicks[tickIndex] = lastTicks[index];
+                        if lastTicks[index] > snapshot.peakTime[addonName] then
+                            snapshot.peakTime[addonName] = lastTicks[index];
+                        end
                     end
                 end
-            end
-            bucket.lastTick[addonName] = newTicks;
+                bucket.lastTick[addonName] = newTicks;
+            end);
         end
         snapshot.bucket = bucket;
     else

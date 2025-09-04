@@ -2268,6 +2268,7 @@ function NAP:InitUI()
             pinContainer:Hide();
             pinContainer:SetFrameStrata("DIALOG");
             pinContainer:SetMovable(true);
+            pinContainer:SetClampedToScreen(true);
             pinContainer:SetToplevel(true);
             pinContainer:SetSize(10, 10);
             pinContainer:SetPoint("CENTER", UIParent, "CENTER", 10, -10);
@@ -2296,9 +2297,10 @@ function NAP:InitUI()
             header:GetHighlightTexture():SetTexture(nil);
         end
 
-        local mover = CreateFrame("Frame", nil, header, "PanelDragBarTemplate");
+        local mover = CreateFrame("Frame", nil, pinContainer, "PanelDragBarTemplate");
         pinContainer.Mover = mover;
-        mover:SetAllPoints();
+        mover:SetFrameLevel(3);
+        mover:SetAllPoints(header);
         mover:SetPropagateMouseMotion(true);
 
         pinContainer.rowPool = CreateUnsecuredRegionPoolInstance(nil, function() return makeStandaloneRow(pinContainer); end);

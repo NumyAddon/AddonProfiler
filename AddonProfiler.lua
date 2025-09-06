@@ -165,6 +165,11 @@ function NAP:Init()
     SLASH_NUMY_ADDON_PROFILER3 = '/addonprofiler';
     SLASH_NUMY_ADDON_PROFILER4 = '/addoncpu';
     SlashCmdList['NUMY_ADDON_PROFILER'] = function(message)
+        if not self.initialized then
+            RunNextFrame(function() SlashCmdList['NUMY_ADDON_PROFILER'](message); end);
+
+            return;
+        end
         self:SlashCommand(message);
     end;
     RunNextFrame(function()
@@ -188,6 +193,7 @@ function NAP:Init()
         else
             self:DisableLogging();
         end
+        self.initialized = true;
     end);
 
     EventRegistry:RegisterCallback('SetItemRef', function(_, link)

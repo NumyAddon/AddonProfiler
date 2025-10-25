@@ -2359,7 +2359,7 @@ function NAP:InitUI()
 
         function pinContainer:OnUpdate(elapsed)
             self.elapsed = (self.elapsed or 0) + elapsed;
-            if self.elapsed >= UPDATE_INTERVAL then
+            if self.elapsed >= UPDATE_INTERVAL and NAP.initialized then
                 self:DoUpdate();
             end
         end

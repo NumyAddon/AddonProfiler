@@ -805,12 +805,12 @@ function NAP:PrepareFilteredData(forceUpdate)
 end
 
 --- @param addons table<string, boolean> # list of addons to get data for
---- @param addonTitleFilter string? # optional filter for addon titles
+--- @param addonFilter string? # optional filter for addon titles/names
 --- @return NAP_ElementData[] filteredData
 --- @return boolean displayNothing
 --- @return table<NAP_Bucket, number>? bucketsWithinHistory
 --- @return table|nil overallSnapshotOverrides
-function NAP:CollectData(addons, addonTitleFilter)
+function NAP:CollectData(addons, addonFilter)
     local now = self.frozenAt or GetTime();
 
     local historyType, historyIndex = self:GetActiveHistoryRange();
@@ -904,7 +904,7 @@ function NAP:CollectData(addons, addonTitleFilter)
 
         for addonName in pairs(addons) do
             local info = self.addons[addonName];
-            if not addonTitleFilter or info.title:lower():match(addonTitleFilter) then
+            if not addonFilter or info.title:lower():match(addonFilter) or addonName:lower():match(addonFilter) then
                 local snapshotOverrides;
                 if snapshot then
                     snapshotOverrides = {

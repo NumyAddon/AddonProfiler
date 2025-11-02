@@ -1,9 +1,8 @@
-local thisAddonName = ...
+local thisAddonName, NAP = ...
 
 local s_trim = string.trim
 local t_insert = table.insert
 local t_removemulti = table.removemulti
-local t_wipe = table.wipe
 local pairs = pairs
 local GetTime = GetTime
 
@@ -14,7 +13,6 @@ local Enum_AddOnProfilerMetric_RecentAverageTime = Enum.AddOnProfilerMetric.Rece
 local Enum_AddOnProfilerMetric_EncounterAverageTime = Enum.AddOnProfilerMetric.EncounterAverageTime;
 local Enum_AddOnProfilerMetric_PeakTime = Enum.AddOnProfilerMetric.PeakTime;
 
-local NAP = {};
 NAP.eventFrame = CreateFrame('Frame');
 
 _G.NumyAddonProfiler = NAP;
@@ -357,12 +355,16 @@ function NAP:InitDB()
             hide = false,
         },
         pinnedAddons = {},
+        historySelectionType = self.currentHistorySelection.type,
+        historySelectionTimeRange = self.currentHistorySelection.timeRange,
     };
     for key, value in pairs(defaults) do
         if self.db[key] == nil then
             self.db[key] = value;
         end
     end
+    self.currentHistorySelection.type = self.db.historySelectionType;
+    self.currentHistorySelection.timeRange = self.db.historySelectionTimeRange;
 end
 
 function NAP:ADDON_LOADED(addonName)
@@ -724,6 +726,11 @@ function NAP:GetCurrentMetrics(metric)
     end
 
     return currentMetrics;
+end
+
+function NAP:PersistHistorySelection()
+    self.db.historySelectionType = self.currentHistorySelection.type;
+    self.db.historySelectionTimeRange = self.currentHistorySelection.timeRange;
 end
 
 --- @return string historyType
@@ -1614,6 +1621,7 @@ function NAP:InitUI()
             local function onAfterSelection()
                 display.elapsed = UPDATE_INTERVAL;
                 display:UpdateHistoryRangeText();
+                NAP:PersistHistorySelection();
             end
             local function isTypeSelected(data)
                 return data == NAP:GetActiveHistoryRange();
@@ -2287,6 +2295,11 @@ function NAP:InitUI()
                 self:SetClampRectInsets(clampWidth, -clampWidth, top or 0, bottom or 0)
             end
             pinContainer:UpdateClampInsets();
+
+            pinContainer.rowPool = CreateUnsecuredRegionPoolInstance(nil, function() return makeStandaloneRow(pinContainer); end);
+            pinContainer.pinnedAddons = {};
+            pinContainer.addonOrder = {};
+            pinContainer.elapsed = UPDATE_INTERVAL;
         end
 
         local bg = pinContainer:CreateTexture(nil, "BACKGROUND");
@@ -2305,14 +2318,23 @@ function NAP:InitUI()
 
         local mover = CreateFrame("Frame", nil, pinContainer, "PanelDragBarTemplate");
         pinContainer.Mover = mover;
-        mover:SetFrameLevel(3);
-        mover:SetAllPoints(header);
-        mover:SetPropagateMouseMotion(true);
+        do
+            mover:SetFrameLevel(3);
+            mover:SetAllPoints(header);
+            mover:SetPropagateMouseMotion(true);
+        end
 
-        pinContainer.rowPool = CreateUnsecuredRegionPoolInstance(nil, function() return makeStandaloneRow(pinContainer); end);
-        pinContainer.pinnedAddons = {};
-        pinContainer.addonOrder = {};
-        pinContainer.elapsed = UPDATE_INTERVAL;
+        local noDataTextContainer = CreateFrame("Frame", nil, pinContainer);
+        pinContainer.NoDataTextContainer = noDataTextContainer;
+        do
+            noDataTextContainer:SetHeight(ROW_HEIGHT);
+            noDataTextContainer:SetPoint("BOTTOMLEFT", pinContainer, "BOTTOMLEFT", 0, 5);
+            noDataTextContainer:SetPoint("BOTTOMRIGHT", pinContainer, "BOTTOMRIGHT", 0, 5);
+
+            local noDataText = noDataTextContainer:CreateFontString(nil, "ARTWORK", "GameFontHighlightLarge")
+            noDataText:SetText("No data available for the selected History Range.")
+            noDataText:SetPoint("CENTER")
+        end
 
         function pinContainer:ToggleAddonPin(addonName)
             if self.pinnedAddons[addonName] then
@@ -2365,21 +2387,27 @@ function NAP:InitUI()
         end
 
         function pinContainer:DoUpdate()
-            local filteredData, displayNothing = NAP:CollectData(self.pinnedAddons);
-            if not filteredData or displayNothing then
-                -- what to do? show an overlay?
-                return;
-            end
-
-            local elementDataByAddon = {}
-            for _, elementData in pairs(filteredData) do
-                elementDataByAddon[elementData.addonName] = elementData;
-            end
-
             self.Header:UpdateColumns();
             for columnText in self.Header.columnPool:EnumerateActive() do
                 local column = columnText.column
                 columnText:SetText(column.title)
+                self:SetWidth(self.Header:GetWidth() + 5);
+            end
+
+            local filteredData, displayNothing = NAP:CollectData(self.pinnedAddons);
+            if not filteredData or displayNothing then
+                for _, row in pairs(self.pinnedAddons) do
+                    row:Hide();
+                end
+                self.NoDataTextContainer:Show();
+                self:SetHeight(2 * ROW_HEIGHT + 5);
+                return;
+            end
+
+            self.NoDataTextContainer:Hide();
+            local elementDataByAddon = {};
+            for _, elementData in pairs(filteredData) do
+                elementDataByAddon[elementData.addonName] = elementData;
             end
 
             for i, addonName in ipairs(self.addonOrder) do

@@ -99,6 +99,31 @@ local CLOSE_ON_ESC_ALWAYS = 'always';
 local CLOSE_ON_ESC_NEVER = 'never';
 local CLOSE_ON_ESC_IN_COMBAT = 'inCombat';
 
+-- these values should not be changed, they're persisted in SVs to remember whether they're toggled on or off
+local HEADER_IDS = {
+    addonTitle = "addonTitle",
+    encounterAvgMs = "encounterAvgMs",
+    overallEncounterAvgPercent = "overallEncounterAvgPercent",
+    peakTimeMs = "peakTimeMs",
+    overallPeakTimePercent = "overallPeakTimePercent",
+    recentMs = "recentMs",
+    overallRecentPercent = "overallRecentPercent",
+    averageMs = "averageMs",
+    totalMs = "totalMs",
+    overallTotalPercent = "overallTotalPercent",
+    applicationTotalPercent = "applicationTotalPercent",
+    ["overCount-1"] = "overCount-1",
+    ["overCount-5"] = "overCount-5",
+    ["overCount-10"] = "overCount-10",
+    ["overCount-50"] = "overCount-50",
+    ["overCount-100"] = "overCount-100",
+    ["overCount-500"] = "overCount-500",
+    ["overCount-1000"] = "overCount-1000",
+    spikeSumMs = "spikeSumMs",
+};
+local ORDER_ASC = 1;
+local ORDER_DESC = -1;
+
 --- @type table<string, NAP_AddonInfo>
 NAP.addons = {};
 --- @type table<string, boolean> # list of addon names
@@ -107,7 +132,7 @@ NAP.loadedAddons = {};
 local ADDON_PROFILING_DISABLED_WARNING =
     "Addon Profling is disabled, perhaps you installed a weakaura similar to wago.io/DisableCPUProfiling. Remove it to use this addon."
     .. "\n"
-    .. ("Click %shere%s to enable addon profiling again."):format("|cff71d5ff|Haddon:NumyAddonProfiler:addonProfilerEnabled|h[", "]|h|r")
+    .. ("Click %shere%s to enable addon profiling again."):format("|cff71d5ff|Haddon:NumyAddonProfiler:addonProfilerEnabled|h[", "]|h|r");
 
 --- Note: NAP:Init() is called at the end of the script body, BEFORE the addon_loaded event
 function NAP:Init()
@@ -290,29 +315,6 @@ function NAP:SlashCommand(message)
     end
 end
 
--- these values should not be changed, they're persistent in SVs to remember whether they're toggled on or off
-local HEADER_IDS = {
-    addonTitle = "addonTitle",
-    encounterAvgMs = "encounterAvgMs",
-    overallEncounterAvgPercent = "overallEncounterAvgPercent",
-    peakTimeMs = "peakTimeMs",
-    overallPeakTimePercent = "overallPeakTimePercent",
-    recentMs = "recentMs",
-    overallRecentPercent = "overallRecentPercent",
-    averageMs = "averageMs",
-    totalMs = "totalMs",
-    overallTotalPercent = "overallTotalPercent",
-    applicationTotalPercent = "applicationTotalPercent",
-    ["overCount-1"] = "overCount-1",
-    ["overCount-5"] = "overCount-5",
-    ["overCount-10"] = "overCount-10",
-    ["overCount-50"] = "overCount-50",
-    ["overCount-100"] = "overCount-100",
-    ["overCount-500"] = "overCount-500",
-    ["overCount-1000"] = "overCount-1000",
-    spikeSumMs = "spikeSumMs",
-}
-
 function NAP:InitDB()
     if not AddonProfilerDB then
         AddonProfilerDB = {};
@@ -358,7 +360,7 @@ function NAP:InitDB()
         historySelectionType = self.currentHistorySelection.type,
         historySelectionTimeRange = self.currentHistorySelection.timeRange,
         sortColumn = HEADER_IDS.averageMs,
-        sortOrder = -1,
+        sortOrder = ORDER_DESC,
     };
     for key, value in pairs(defaults) do
         if self.db[key] == nil then
@@ -1053,9 +1055,6 @@ end
 function NAP:InitUI()
     self.dataProvider = nil;
     self.curMatch = ".+"
-
-    local ORDER_ASC = 1;
-    local ORDER_DESC = -1;
 
     local msText = "|cff808080ms|r";
     local xText = "|cff808080x|r";

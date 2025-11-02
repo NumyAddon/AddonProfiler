@@ -898,36 +898,99 @@ function NAP:CollectData(addons, addonTitleFilter)
                 endMetrics = (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName),
             };
         end
+        if NAP.db.ignoreNAP then
+              local function cloneMetricsTable(metrics)
+                  local clone = {}
+                  if metrics then
+                      for k, v in pairs(metrics) do
+                          clone[k] = v
+                      end
+                  end
+                  return clone
+              end
+
+              local napOverrides
+              if snapshot then
+                  napOverrides = {
+                      encounterAvg = snapshot.bossAvg[thisAddonName] or 0,
+                      recentMs = snapshot.recentAvg[thisAddonName] or 0,
+                      peakTime = snapshot.peakTime[thisAddonName] or 0,
+                      totalMs = snapshot.total[thisAddonName] or 0,
+                      startMetrics = cloneMetricsTable(snapshot.startMetrics[thisAddonName]),
+                      endMetrics = cloneMetricsTable(snapshot.endMetrics[thisAddonName]),
+                  }
+              else
+                  napOverrides = {
+                      encounterAvg = C_AddOnProfiler_GetAddOnMetric(thisAddonName, Enum_AddOnProfilerMetric_EncounterAverageTime) or 0,
+                      recentMs = C_AddOnProfiler_GetAddOnMetric(thisAddonName, Enum_AddOnProfilerMetric_RecentAverageTime) or 0,
+                      peakTime = passiveMode and C_AddOnProfiler_GetAddOnMetric(thisAddonName, Enum_AddOnProfilerMetric_PeakTime) or (self.peakMs[thisAddonName] or 0),
+                      totalMs = self.totalMs[thisAddonName] or 0,
+                      startMetrics = cloneMetricsTable(self.resetBaselineMetrics[thisAddonName]),
+                      endMetrics = cloneMetricsTable((self.frozenMetrics and self.frozenMetrics[thisAddonName]) or self:GetCurrentMsSpikeMetrics(thisAddonName)),
+                  }
+              end
+
+              local totalsToAdjust = { "encounterAvg", "recentMs", "totalMs" }
+              for _, key in ipairs(totalsToAdjust) do
+                  local newValue = (overallSnapshotOverrides[key] or 0) - (napOverrides[key] or 0)
+                  overallSnapshotOverrides[key] = newValue > 0 and newValue or 0
+              end
+
+              local peakWithoutNAP = (overallSnapshotOverrides.peakTime or 0) - (napOverrides.peakTime or 0)
+              overallSnapshotOverrides.peakTime = peakWithoutNAP > 0 and peakWithoutNAP or 0
+
+              local function subtractMetrics(target, source)
+                  if not target then
+                      return
+                  end
+                  source = source or {}
+                  for ms in pairs(msMetricMap) do
+                      local newValue = (target[ms] or 0) - (source[ms] or 0)
+                      target[ms] = newValue > 0 and newValue or 0
+                  end
+              end
+
+              overallSnapshotOverrides.startMetrics = cloneMetricsTable(overallSnapshotOverrides.startMetrics)
+              overallSnapshotOverrides.endMetrics = cloneMetricsTable(overallSnapshotOverrides.endMetrics)
+
+              subtractMetrics(overallSnapshotOverrides.startMetrics, napOverrides.startMetrics)
+              subtractMetrics(overallSnapshotOverrides.endMetrics, napOverrides.endMetrics)
+        end
+
         local overallStats = self:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory, nil, overallSnapshotOverrides);
 
         for addonName in pairs(addons) do
-            local info = self.addons[addonName];
-            if not addonTitleFilter or info.title:lower():match(addonTitleFilter) then
-                local snapshotOverrides;
-                if snapshot then
-                    snapshotOverrides = {
-                        encounterAvg = snapshot.bossAvg[addonName] or 0,
-                        recentMs = snapshot.recentAvg[addonName] or 0,
-                        peakTime = snapshot.peakTime[addonName] or 0,
-                        totalMs = snapshot.total[addonName] or 0,
-                        numberOfTicks = overallSnapshotOverrides and overallSnapshotOverrides.numberOfTicks or 0,
-                        applicationTotalMs = overallSnapshotOverrides and overallSnapshotOverrides.applicationTotalMs or 0,
-                        startMetrics = snapshot.startMetrics[addonName] or {},
-                        endMetrics = snapshot.endMetrics[addonName] or {},
-                    };
-                else
-                    snapshotOverrides = {
-                        encounterAvg = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_EncounterAverageTime),
-                        recentMs = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_RecentAverageTime),
-                        peakTime = passiveMode and C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_PeakTime) or self.peakMs[addonName],
-                        totalMs = self.totalMs[addonName],
-                        numberOfTicks = self.tickNumber - self.loadedAtTick[addonName],
-                        applicationTotalMs = (now - self.resetTime) * 1000,
-                        startMetrics = self.resetBaselineMetrics[addonName],
-                        endMetrics = (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName),
-                    };
+            if addonName == thisAddonName and NAP.db.ignoreNAP then
+                -- continue
+            else
+                local info = self.addons[addonName];
+                if not addonTitleFilter or info.title:lower():match(addonTitleFilter) then
+                    local snapshotOverrides;
+                    if snapshot then
+                        snapshotOverrides = {
+                            encounterAvg = snapshot.bossAvg[addonName] or 0,
+                            recentMs = snapshot.recentAvg[addonName] or 0,
+                            peakTime = snapshot.peakTime[addonName] or 0,
+                            totalMs = snapshot.total[addonName] or 0,
+                            numberOfTicks = overallSnapshotOverrides and overallSnapshotOverrides.numberOfTicks or 0,
+                            applicationTotalMs = overallSnapshotOverrides and overallSnapshotOverrides.applicationTotalMs or 0,
+                            startMetrics = snapshot.startMetrics[addonName] or {},
+                            endMetrics = snapshot.endMetrics[addonName] or {},
+                        };
+                    else
+                        snapshotOverrides = {
+                            encounterAvg = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_EncounterAverageTime),
+                            recentMs = C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_RecentAverageTime),
+                            peakTime = passiveMode and C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_PeakTime) or self.peakMs[addonName],
+                            totalMs = self.totalMs[addonName],
+                            numberOfTicks = self.tickNumber - self.loadedAtTick[addonName],
+                            applicationTotalMs = (now - self.resetTime) * 1000,
+                            startMetrics = self.resetBaselineMetrics[addonName],
+                            endMetrics = (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName),
+                        };
+                    end
+                    t_insert(filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
                 end
-                t_insert(filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
             end
         end
     end
@@ -1752,6 +1815,11 @@ function NAP:InitUI()
                 local active = rootDescription:CreateRadio("Active Mode", isSelected, onSelection, MODE_ACTIVE)
                 local performance = rootDescription:CreateRadio("Performance Mode", isSelected, onSelection, MODE_PERFORMANCE)
                 local passive = rootDescription:CreateRadio("Passive Mode", isSelected, onSelection, MODE_PASSIVE)
+
+                rootDescription:CreateDivider()
+                rootDescription:CreateCheckbox(HIDE .. " " .. thisAddonName, function() return NAP.db.ignoreNAP or false end, function()
+                    NAP.db.ignoreNAP = not NAP.db.ignoreNAP
+                end)
 
                 active:SetTitleAndTextTooltip("Active Mode", "Provides the most amount of information, and allows you to select a History Range to filter by.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap active"))
                 performance:SetTitleAndTextTooltip("Performance Mode", "Performs slightly less work in the background, but does not allow you to select a History Range.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap performance"))

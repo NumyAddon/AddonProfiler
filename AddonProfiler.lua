@@ -357,6 +357,8 @@ function NAP:InitDB()
         pinnedAddons = {},
         historySelectionType = self.currentHistorySelection.type,
         historySelectionTimeRange = self.currentHistorySelection.timeRange,
+        sortColumn = HEADER_IDS.averageMs,
+        sortOrder = -1,
     };
     for key, value in pairs(defaults) do
         if self.db[key] == nil then
@@ -1289,14 +1291,31 @@ function NAP:InitUI()
         self.ProfilerFrame = display
         do
             do
-                local activeSort, activeOrder = HEADER_IDS.averageMs, ORDER_DESC
+                local DEFAULT_SORT_COLUMN = HEADER_IDS.averageMs
+
                 function display:SetActiveSort(sort, order)
-                    activeSort, activeOrder = sort, order
+                    if not COLUMN_INFO[sort] then
+                        sort = DEFAULT_SORT_COLUMN
+                    end
+                    if order ~= ORDER_ASC and order ~= ORDER_DESC then
+                        order = ORDER_DESC
+                    end
+                    NAP.db.sortColumn = sort
+                    NAP.db.sortOrder = order
                     self:UpdateSortComparator()
                 end
 
                 function display:GetActiveSort()
-                    local sort, order = activeSort, activeOrder
+                    local sort = NAP.db.sortColumn
+                    if not sort or not COLUMN_INFO[sort] then
+                        sort = DEFAULT_SORT_COLUMN
+                    end
+
+                    local order = NAP.db.sortOrder
+                    if order ~= ORDER_ASC and order ~= ORDER_DESC then
+                        order = ORDER_DESC
+                    end
+
                     if NAP.db.mode == MODE_PASSIVE and not COLUMN_INFO[sort].availableInPassiveMode then
                         sort = HEADER_IDS.spikeSumMs
                     end

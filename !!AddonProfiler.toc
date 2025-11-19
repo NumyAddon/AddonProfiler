@@ -1,7 +1,7 @@
 ## Title: AddonProfiler
 ## Version: @project-version@
-## Interface: @toc-version-retail@
-## Interface-Retail: @toc-version-retail@
+## Interface: @toc-version-retail@,@toc-version-midnight@,120000
+## Interface-Retail: @toc-version-retail@,@toc-version-midnight@,120000
 ## Interface-Classic: @toc-version-classic@
 ## Interface-Cata: @toc-version-cata@
 ## Interface-Mists: @toc-version-mists@

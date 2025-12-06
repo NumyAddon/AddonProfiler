@@ -1,10 +1,11 @@
-local thisAddonName, NAP = ...
+local thisAddonName, NAP = ...;
 
-local s_trim = string.trim
-local t_insert = table.insert
-local t_removemulti = table.removemulti
-local pairs = pairs
-local GetTime = GetTime
+local s_trim = string.trim;
+local t_insert = table.insert;
+local t_removemulti = table.removemulti;
+local pairs = pairs;
+local GetTime = GetTime;
+local StripHyperlinks = C_StringUtil and C_StringUtil.StripHyperlinks or StripHyperlinks;
 
 local C_AddOnProfiler_GetAddOnMetric = C_AddOnProfiler.GetAddOnMetric;
 local C_AddOnProfiler_GetOverallMetric = C_AddOnProfiler.GetOverallMetric;
@@ -1475,7 +1476,7 @@ function NAP:InitUI()
                             GameTooltip:Hide()
                         end)
                         header:SetScript("OnClick", function(self, button)
-                            headers:OnHeaderClick(self:GetID(), button, self)
+                            headers:OnHeaderClick(self:GetID(), button)
                         end)
                         header:RegisterForClicks("AnyDown")
                     end
@@ -2572,9 +2573,7 @@ function NAP:InitMinimapButton()
             end,
             OnTooltipShow = function(tooltip)
                 tooltip:AddLine('Addon Profiler ' .. (
-                    self:IsLogging()
-                        and GREEN_FONT_COLOR:WrapTextInColorCode("enabled")
-                        or RED_FONT_COLOR:WrapTextInColorCode("disabled")
+                    self:IsLogging() and GREEN_FONT_COLOR:WrapTextInColorCode("enabled") or RED_FONT_COLOR:WrapTextInColorCode("disabled")
                 ))
                 tooltip:AddLine(CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. ' to toggle the UI')
                 tooltip:AddLine(CreateAtlasMarkup('NPE_RightClick', 18, 18) .. ' to toggle logging')
@@ -2602,10 +2601,8 @@ do
     function NumyAddonProfiler_OnAddonCompartmentEnter(_, button)
         GameTooltip:SetOwner(button, 'ANCHOR_RIGHT');
         GameTooltip:AddLine('Addon Profiler ' .. (
-            NAP:IsLogging()
-                and GREEN_FONT_COLOR:WrapTextInColorCode("enabled")
-                or RED_FONT_COLOR:WrapTextInColorCode("disabled")
-        ))
+            NAP:IsLogging() and GREEN_FONT_COLOR:WrapTextInColorCode("enabled") or RED_FONT_COLOR:WrapTextInColorCode("disabled")
+        ));
         GameTooltip:AddLine(CreateAtlasMarkup('NPE_LeftClick', 18, 18) .. ' to toggle the UI');
         GameTooltip:AddLine(CreateAtlasMarkup('NPE_RightClick', 18, 18) .. ' to toggle logging');
         GameTooltip:Show();

@@ -1,10 +1,9 @@
 ## Title: AddonProfiler
 ## Version: @project-version@
-## Interface: @toc-version-retail@,@toc-version-midnight@,120000
-## Interface-Retail: @toc-version-retail@,@toc-version-midnight@,120000
-## Interface-Classic: @toc-version-classic@
-## Interface-Cata: @toc-version-cata@
-## Interface-Mists: @toc-version-mists@
+## Interface: @toc-version-midnight@, @toc-version-retail@, @toc-version-mists@, @toc-version-cata@, @toc-version-wrath@, @toc-version-bcc@, @toc-version-classic@
+#@debug@
+## Interface: 120000
+#@end-debug@
 ## Notes: AddonProfiler is a pretty UI for blizzard's addon profiling stats.
 ## Author: Numy
 ## SavedVariables: AddonProfilerDB

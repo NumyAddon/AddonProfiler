@@ -1902,7 +1902,7 @@ function NAP:InitUI()
                     GameTooltip:AddDoubleLine("Peak CPU time:", TIME_FORMAT(data.peakTime), 1, 0.92, 0, 1, 1, 1)
                     GameTooltip:AddDoubleLine("Average CPU time per frame:", TIME_FORMAT(data.averageMs), 1, 0.92, 0, 1, 1, 1)
                     GameTooltip:AddDoubleLine("Total CPU time:", TIME_FORMAT(data.totalMs), 1, 0.92, 0, 1, 1, 1)
-                    GameTooltip:AddDoubleLine("Number of frames:", RAW_FORMAT(data.numberOfTicks), 1, 0.92, 0, 1, 1, 1)
+                    GameTooltip:AddDoubleLine("Frames elapsed:", RAW_FORMAT(data.numberOfTicks), 1, 0.92, 0, 1, 1, 1)
                     GameTooltip:AddDoubleLine("Memory Usage:", MEMORY_FORMAT(data.memoryUsage), 1, 0.92, 0, 1, 1, 1)
                     GameTooltip:AddLine("|cnNORMAL_FONT_COLOR:Note:|r Memory usage is updated only when opening the UI.", 1, 1, 1, true)
 

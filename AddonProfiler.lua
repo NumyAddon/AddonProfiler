@@ -1596,6 +1596,10 @@ function NAP:InitUI()
                 resetHeight:SetTitleAndTextTooltip("Reset Height", "Reset the window height to the default.");
 
                 local openKeybindSettings = rootDescription:CreateButton("Set Keybinds", function()
+                    if InCombatLockdown() then
+                        print('Cannot open the options while in combat.');
+                        return;
+                    end
                     Settings.OpenToCategory(Settings.KEYBINDINGS_CATEGORY_ID);
                     RunNextFrame(function()
                         SettingsPanel.SearchBox:SetText("Addon Profiler");

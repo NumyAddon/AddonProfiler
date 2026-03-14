@@ -1715,11 +1715,12 @@ function NAP:InitUI()
             end)
         end
 
-        local historyRangeText = display:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        local historyRangeLabel = display:CreateFontString(nil, "ARTWORK", "GameFontNormal");
+        display.HistoryRangeLabel = historyRangeLabel;
         do
-            historyRangeText:SetText("History Range")
-            historyRangeText:SetPoint("RIGHT", historyMenu, "LEFT", -4, 0)
-            historyRangeText:SetJustifyH("RIGHT")
+            historyRangeLabel:SetText("History Range");
+            historyRangeLabel:SetPoint("RIGHT", historyMenu, "LEFT", -4, 0);
+            historyRangeLabel:SetJustifyH("RIGHT");
         end
 
         local search = CreateFrame("EditBox", "$parentSearchBox", display, "SearchBoxTemplate")

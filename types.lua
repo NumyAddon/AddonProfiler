@@ -46,6 +46,7 @@
 --- @field isComplete boolean # false until the snapshot is completed
 
 --- @class NAP_Snapshot: NAP_PartialSnapshot
+--- @field isComplete true
 --- @field endMetrics table<string, table<number, number>> # addonName -> {ms -> numberOfMsSpikes}
 --- @field endTick number # 0 if in passive mode
 --- @field endTime number
@@ -54,13 +55,22 @@
 --- @field bossAvg table<string, number> # addonName -> ms
 --- @field recentAvg table<string, number> # addonName -> ms
 --- @field peakTime table<string, number> # addonName -> ms
---- @field bucket nil|NAP_Bucket # nil if not in active mode
 
---- @class NAP_CombatSnapshot
+--- @class NAP_SnapshotCollection
 --- @field snapshot NAP_Snapshot|NAP_PartialSnapshot
 
---- @class NAP_EncounterSnapshot
---- @field snapshot NAP_Snapshot|NAP_PartialSnapshot
+--- @class NAP_CombatSnapshot: NAP_SnapshotCollection
+
+--- @class NAP_PersistableSnapshotCollection: NAP_SnapshotCollection
+--- @field isCurrentSession boolean
+
+--- @class NAP_ChallengeModeSnapshot: NAP_PersistableSnapshotCollection
+--- @field mapID number
+--- @field mapName string
+--- @field level number
+--- @field completed boolean
+
+--- @class NAP_EncounterSnapshot: NAP_PersistableSnapshotCollection
 --- @field encounterID number
 --- @field name string # encounter name
 --- @field kill boolean

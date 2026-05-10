@@ -2,6 +2,7 @@ local thisAddonName, NAP = ...;
 
 local s_trim = string.trim;
 local t_insert = table.insert;
+local t_remove = table.remove;
 local t_removemulti = table.removemulti;
 local pairs = pairs;
 local GetTime = GetTime;
@@ -49,6 +50,7 @@ local TOTAL_ADDON_METRICS_KEY = "\00total\00";
 local HISTORY_TYPE_SINCE_RESET = 'sinceReset';
 local HISTORY_TYPE_COMBAT = 'combat';
 local HISTORY_TYPE_ENCOUNTER = 'encounter';
+local HISTORY_TYPE_CHALLENGE_MODE = 'challengeMode';
 local HISTORY_TYPE_TIME_RANGE = 'timeRange';
 local HISTORY_LATEST = -1;
 local HISTORY_TIME_RANGES = { 5, 15, 30, 60, 120, 300, 600 } -- 5sec - 10min
@@ -56,6 +58,7 @@ NAP.currentHistorySelection = {
     type = HISTORY_TYPE_TIME_RANGE,
     timeRange = 30,
     encounterIndex = HISTORY_LATEST,
+    challengeModeIndex = HISTORY_LATEST,
     combatIndex = HISTORY_LATEST,
 };
 
@@ -68,6 +71,7 @@ NAP.tickNumber = 0;
 NAP.peakMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
 NAP.combatPeakMs = nil;
 NAP.encounterPeakMs = nil;
+NAP.challengeModePeakMs = nil;
 NAP.snapshots = {
     --- @type NAP_Bucket[]
     buckets = {},
@@ -84,8 +88,13 @@ do
     NAP.snapshots.buckets[1] = lastBucket;
     NAP.snapshots.lastBucket = lastBucket;
 end
+
+local MAX_SAVED_SNAPSHOTS_PER_TYPE = 20;
+
 --- @type NAP_EncounterSnapshot[]
 NAP.encounterSnapshots = {};
+--- @type NAP_ChallengeModeSnapshot[]
+NAP.challengeModeSnapshots = {};
 --- @type NAP_CombatSnapshot[]
 NAP.combatSnapshots = {};
 
@@ -101,6 +110,7 @@ local CLOSE_ON_ESC_NEVER = 'never';
 local CLOSE_ON_ESC_IN_COMBAT = 'inCombat';
 
 -- these values should not be changed, they're persisted in SVs to remember whether they're toggled on or off
+--- @enum NAP_HeaderID
 local HEADER_IDS = {
     addonTitle = "addonTitle",
     encounterAvgMs = "encounterAvgMs",
@@ -181,6 +191,8 @@ function NAP:Init()
     self.eventFrame:RegisterEvent('ENCOUNTER_END');
     self.eventFrame:RegisterEvent('PLAYER_REGEN_DISABLED');
     self.eventFrame:RegisterEvent('PLAYER_REGEN_ENABLED');
+    self.eventFrame:RegisterEvent('CHALLENGE_MODE_START');
+    self.eventFrame:RegisterEvent('CHALLENGE_MODE_COMPLETED');
 
     self.collectData = true;
     self:StartPurgeTicker();
@@ -205,7 +217,10 @@ function NAP:Init()
             self.ENCOUNTER_END = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'ENCOUNTER_END', self.ENCOUNTER_END);
             self.PLAYER_REGEN_DISABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_DISABLED', self.PLAYER_REGEN_DISABLED);
             self.PLAYER_REGEN_ENABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_ENABLED', self.PLAYER_REGEN_ENABLED);
-            self.GetElelementDataForAddon = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'GetElementDataForAddon', self.GetElelementDataForAddon);
+            self.CHALLENGE_MODE_START = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'CHALLENGE_MODE_START', self.CHALLENGE_MODE_START);
+            self.CHALLENGE_MODE_COMPLETED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'CHALLENGE_MODE_COMPLETED', self.CHALLENGE_MODE_COMPLETED);
+            self.PLAYER_LEAVING_WORLD = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_LEAVING_WORLD', self.PLAYER_LEAVING_WORLD);
+            self.GetElementDataForAddon = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'GetElementDataForAddon', self.GetElementDataForAddon);
         end
 
         if C_AddOns.IsAddOnLoaded('BlizzMove') then
@@ -320,8 +335,10 @@ function NAP:InitDB()
     if not AddonProfilerDB then
         AddonProfilerDB = {};
     end
+    --- @type NAP_DB
     self.db = AddonProfilerDB;
 
+    --- @type table<NAP_HeaderID, boolean>
     local defaultShownColumns = {
         [HEADER_IDS.addonTitle] = true,
         [HEADER_IDS.encounterAvgMs] = true,
@@ -350,6 +367,8 @@ function NAP:InitDB()
         end
     end
 
+    --- @class NAP_DB
+    --- @field shownColumns table<NAP_HeaderID, boolean>
     local defaults = {
         enabled = true,
         mode = MODE_ACTIVE,
@@ -362,6 +381,14 @@ function NAP:InitDB()
         historySelectionTimeRange = self.currentHistorySelection.timeRange,
         sortColumn = HEADER_IDS.averageMs,
         sortOrder = ORDER_DESC,
+        persistEncounterSnapshots = true,
+        persistChallengeModeSnapshots = true,
+        --- @type table<string, NAP_EncounterSnapshot[]> # [character-realm] = snapshotCollection
+        persistedEncounterSnapshots = {},
+        --- @type table<string, NAP_ChallengeModeSnapshot[]> # [character-realm] = snapshotCollection
+        persistedChallengeModeSnapshots = {},
+        --- @type table<string, NAP_AddonInfo>
+        addonMetadataCache = {},
     };
     for key, value in pairs(defaults) do
         if self.db[key] == nil then
@@ -370,6 +397,31 @@ function NAP:InitDB()
     end
     self.currentHistorySelection.type = self.db.historySelectionType;
     self.currentHistorySelection.timeRange = self.db.historySelectionTimeRange;
+
+    for addonName, info in pairs(self.addons) do
+        self.db.addonMetadataCache[addonName] = info;
+    end
+    self.addons = self.db.addonMetadataCache;
+
+    local characterKey = UnitName('player') .. '-' .. GetRealmName();
+    if self.db.persistEncounterSnapshots then
+        self.encounterSnapshots = self.db.persistedEncounterSnapshots[characterKey] or {};
+        self.db.persistedEncounterSnapshots[characterKey] = self.encounterSnapshots;
+        for _, snapshot in pairs(self.encounterSnapshots) do
+            snapshot.isCurrentSession = false;
+        end
+    else
+        self.db.persistedEncounterSnapshots = {};
+    end
+    if self.db.persistChallengeModeSnapshots then
+        self.challengeModeSnapshots = self.db.persistedChallengeModeSnapshots[characterKey] or {};
+        self.db.persistedChallengeModeSnapshots[characterKey] = self.challengeModeSnapshots;
+        for _, snapshot in pairs(self.challengeModeSnapshots) do
+            snapshot.isCurrentSession = false;
+        end
+    else
+        self.db.persistedChallengeModeSnapshots = {};
+    end
 end
 
 function NAP:ADDON_LOADED(addonName)
@@ -459,6 +511,7 @@ function NAP:OnUpdatePerformanceMode()
     local peakMs = self.peakMs;
     local combatPeakMs = self.combatPeakMs;
     local encounterPeakMs = self.encounterPeakMs;
+    local challengeModePeakMs = self.challengeModePeakMs;
 
     local overallLastTickMs = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_LastTime);
     if overallLastTickMs > 0 then
@@ -471,6 +524,9 @@ function NAP:OnUpdatePerformanceMode()
         end
         if encounterPeakMs and overallLastTickMs > (encounterPeakMs[TOTAL_ADDON_METRICS_KEY] or 0) then
             encounterPeakMs[TOTAL_ADDON_METRICS_KEY] = overallLastTickMs;
+        end
+        if challengeModePeakMs and overallLastTickMs > (challengeModePeakMs[TOTAL_ADDON_METRICS_KEY] or 0) then
+            challengeModePeakMs[TOTAL_ADDON_METRICS_KEY] = overallLastTickMs;
         end
     end
 
@@ -486,6 +542,9 @@ function NAP:OnUpdatePerformanceMode()
             end
             if encounterPeakMs and lastTickMs > (encounterPeakMs[addonName] or 0) then
                 encounterPeakMs[addonName] = lastTickMs;
+            end
+            if challengeModePeakMs and lastTickMs > (challengeModePeakMs[addonName] or 0) then
+                challengeModePeakMs[addonName] = lastTickMs;
             end
         end
     end
@@ -569,10 +628,13 @@ function NAP:ENCOUNTER_START(encounterID, encounterName, difficultyID, _)
     if self.db.mode == MODE_PERFORMANCE then
         self.encounterPeakMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
     end
+    --- @type NAP_EncounterSnapshot
     local snapshot = {
         encounterID = encounterID,
         name = encounterName,
         snapshot = self:InitNewSnapshot(self.encounterPeakMs),
+        kill = false,
+        isCurrentSession = true,
     };
     t_insert(self.encounterSnapshots, snapshot);
 end
@@ -589,6 +651,59 @@ function NAP:ENCOUNTER_END(encounterID, _, difficultyID, _, success)
 
     self:CloseSnapshot(snapshot.snapshot);
     self.encounterPeakMs = nil;
+    if #self.encounterSnapshots > MAX_SAVED_SNAPSHOTS_PER_TYPE then
+        t_remove(self.encounterSnapshots, 1);
+    end
+end
+
+function NAP:CHALLENGE_MODE_START(mapID)
+    if self.db.mode == MODE_PERFORMANCE then
+        self.challengeModePeakMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
+    end
+    --- @type NAP_ChallengeModeSnapshot
+    local snapshot = {
+        mapID = mapID,
+        mapName = C_ChallengeMode.GetMapUIInfo(mapID),
+        level = C_ChallengeMode.GetActiveKeystoneInfo(),
+        snapshot = self:InitNewSnapshot(self.challengeModePeakMs),
+        completed = false,
+        isCurrentSession = true,
+    };
+    t_insert(self.challengeModeSnapshots, snapshot);
+
+    self.eventFrame:RegisterEvent('PLAYER_LEAVING_WORLD');
+end
+
+function NAP:CHALLENGE_MODE_COMPLETED()
+    self.eventFrame:UnregisterEvent('PLAYER_LEAVING_WORLD');
+    local snapshot = self.challengeModeSnapshots[#self.challengeModeSnapshots];
+    if not snapshot then
+        self:Print('Challenge mode ended without matching start');
+        return;
+    end
+    snapshot.completed = true;
+
+    self:CloseSnapshot(snapshot.snapshot);
+    self.challengeModePeakMs = nil;
+    if #self.challengeModeSnapshots > MAX_SAVED_SNAPSHOTS_PER_TYPE then
+        t_remove(self.challengeModeSnapshots, 1);
+    end
+end
+
+function NAP:PLAYER_LEAVING_WORLD()
+    self.eventFrame:UnregisterEvent('PLAYER_LEAVING_WORLD');
+
+    local snapshot = self.challengeModeSnapshots[#self.challengeModeSnapshots];
+    if not snapshot then
+        self:Print('Challenge mode ended without matching start');
+        return;
+    end
+
+    self:CloseSnapshot(snapshot.snapshot);
+    self.challengeModePeakMs = nil;
+    if #self.challengeModeSnapshots > MAX_SAVED_SNAPSHOTS_PER_TYPE then
+        t_remove(self.challengeModeSnapshots, 1);
+    end
 end
 
 function NAP:StartPurgeTicker()
@@ -656,6 +771,7 @@ function NAP:CloseSnapshot(snapshot)
 
     if self.db.mode == MODE_ACTIVE then
         snapshot.peakTime = {};
+        -- bucket could be used in the future for things like graphs; for now we just discard it to save on SV size, but one option would be to encode and compress it in the future.
         local bucket = {
             lastTick = {},
             tickMap = {},
@@ -685,7 +801,6 @@ function NAP:CloseSnapshot(snapshot)
                 bucket.lastTick[addonName] = newTicks;
             end);
         end
-        snapshot.bucket = bucket;
     else
         snapshot.peakTime = snapshot.peakTime or self:GetCurrentMetrics(Enum_AddOnProfilerMetric_PeakTime);
     end
@@ -752,6 +867,8 @@ function NAP:GetActiveHistoryRange()
         return HISTORY_TYPE_COMBAT, self.currentHistorySelection.combatIndex;
     elseif HISTORY_TYPE_ENCOUNTER == type then
         return HISTORY_TYPE_ENCOUNTER, self.currentHistorySelection.encounterIndex;
+    elseif HISTORY_TYPE_CHALLENGE_MODE == type then
+        return HISTORY_TYPE_CHALLENGE_MODE, self.currentHistorySelection.challengeModeIndex;
     end
 
     -- if something went wrong, default to time range
@@ -805,6 +922,25 @@ function NAP:PrepareFilteredData(forceUpdate)
     return bucketsWithinHistory, overallSnapshotOverrides;
 end
 
+--- @param collection NAP_SnapshotCollection
+--- @param preferredIndex number
+--- @return NAP_Snapshot|nil
+function NAP:GetSnapshotFromCollection(collection, preferredIndex)
+    local index = preferredIndex;
+    if index == HISTORY_LATEST then
+        index = #collection;
+        local snapshot = collection[index] and collection[index].snapshot;
+        if snapshot and not snapshot.isComplete then
+            index = index - 1;
+        end
+    end
+
+    local snapshot = collection[index] and collection[index].snapshot;
+    if snapshot and snapshot.isComplete then
+        return snapshot;
+    end
+end
+
 --- @param addons table<string, boolean> # list of addons to get data for
 --- @param addonFilter string? # optional filter for addon titles/names
 --- @return NAP_ElementData[] filteredData
@@ -835,27 +971,18 @@ function NAP:CollectData(addons, addonFilter)
             end
         end
     end
+    local snapshotContainer;
+    if HISTORY_TYPE_COMBAT == historyType then
+        snapshotContainer = self.combatSnapshots;
+    elseif HISTORY_TYPE_ENCOUNTER == historyType then
+        snapshotContainer = self.encounterSnapshots;
+    elseif HISTORY_TYPE_CHALLENGE_MODE == historyType then
+        snapshotContainer = self.challengeModeSnapshots;
+    end
     local snapshot = nil;
     local displayNothing = false;
-    if HISTORY_TYPE_COMBAT == historyType then
-        local index = historyIndex;
-        if index == HISTORY_LATEST then
-            index = #self.combatSnapshots;
-        end
-        snapshot = self.combatSnapshots[index] and self.combatSnapshots[index].snapshot;
-        if not snapshot or not snapshot.isComplete then
-            displayNothing = true;
-        end
-    elseif HISTORY_TYPE_ENCOUNTER == historyType then
-        local index = historyIndex;
-        if index == HISTORY_LATEST then
-            index = #self.encounterSnapshots;
-            snapshot = self.encounterSnapshots[index] and self.encounterSnapshots[index].snapshot;
-            if snapshot and not snapshot.isComplete then
-                index = index - 1;
-            end
-        end
-        snapshot = self.encounterSnapshots[index] and self.encounterSnapshots[index].snapshot;
+    if snapshotContainer then
+        snapshot = self:GetSnapshotFromCollection(snapshotContainer, historyIndex);
         if not snapshot then
             displayNothing = true;
         end
@@ -901,7 +1028,7 @@ function NAP:CollectData(addons, addonFilter)
                 endMetrics = (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName),
             };
         end
-        local overallStats = self:GetElelementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory, nil, overallSnapshotOverrides);
+        local overallStats = self:GetElementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory, nil, overallSnapshotOverrides);
 
         for addonName in pairs(addons) do
             local info = self.addons[addonName];
@@ -930,7 +1057,7 @@ function NAP:CollectData(addons, addonFilter)
                         endMetrics = (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName),
                     };
                 end
-                t_insert(filteredData, self:GetElelementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
+                t_insert(filteredData, self:GetElementDataForAddon(addonName, info, withinHistory, overallStats, snapshotOverrides));
             end
         end
     end
@@ -944,7 +1071,7 @@ end
 --- @param overallStats NAP_ElementData?
 --- @param snapshotOverrides { encounterAvg: number, recentMs: number, peakTime: number, totalMs: number, numberOfTicks: number, applicationTotalMs: number, startMetrics: table<string, number>, endMetrics: table<string, number> }
 --- @return NAP_ElementData
-function NAP:GetElelementDataForAddon(addonName, info, bucketsWithinHistory, overallStats, snapshotOverrides)
+function NAP:GetElementDataForAddon(addonName, info, bucketsWithinHistory, overallStats, snapshotOverrides)
     --- @type NAP_ElementData
     local data = {
         addonName = addonName,
@@ -1587,6 +1714,38 @@ function NAP:InitUI()
                     closeOnEsc:CreateRadio(NEVER, isSelected, setSelected, CLOSE_ON_ESC_NEVER);
                 end
 
+                local characterKey = UnitName('player') .. " - " .. GetRealmName();
+                do
+                    local function isSelected() return self.db.persistEncounterSnapshots end
+                    local function setSelected()
+                        self.db.persistEncounterSnapshots = not self.db.persistEncounterSnapshots;
+                        if self.db.persistEncounterSnapshots then
+                            self.db.persistedEncounterSnapshots[characterKey] = self.encounterSnapshots;
+                        else
+                            self.db.persistedEncounterSnapshots[characterKey] = nil;
+                        end
+
+                        return MenuResponse.Refresh;
+                    end
+                    local persistEncounters = rootDescription:CreateCheckbox("Persist Encounter Snapshots", isSelected, setSelected);
+                    persistEncounters:SetTitleAndTextTooltip("Persist Encounter Snapshots", "Whether to save snapshots in SavedVariables, the data is saved per character.");
+                end
+                do
+                    local function isSelected() return self.db.persistChallengeModeSnapshots end
+                    local function setSelected()
+                        self.db.persistChallengeModeSnapshots = not self.db.persistChallengeModeSnapshots;
+                        if self.db.persistChallengeModeSnapshots then
+                            self.db.persistedChallengeModeSnapshots[characterKey] = self.ChallengeModeSnapshots;
+                        else
+                            self.db.persistedChallengeModeSnapshots[characterKey] = nil;
+                        end
+
+                        return MenuResponse.Refresh;
+                    end
+                    local persistChallengeModes = rootDescription:CreateCheckbox("Persist Keystone Dungeon Snapshots", isSelected, setSelected);
+                    persistChallengeModes:SetTitleAndTextTooltip("Persist Keystone Dungeon Snapshots", "Whether to save snapshots in SavedVariables, the data is saved per character.");
+                end
+
                 if not BlizzMoveAPI then
                     local resetScale = rootDescription:CreateButton("Reset Scale", function() display:SetScale(1); end);
                     resetScale:SetTitleAndTextTooltip("Reset Scale", "Reset the window scale. You can change the scale with CTRL + SCROLL");
@@ -1618,7 +1777,34 @@ function NAP:InitUI()
 
             local SINCE_RESET = "Since Reset";
             local LAST_ENCOUNTER = "Last Encounter";
+            local LAST_KEY = "Last Keystone Dungeon"
             local LAST_COMBAT = "Last Combat";
+
+            local persistedSnapshotTexture = CreateSimpleTextureMarkup(6718291, 16)
+
+            --- @param index number
+            --- @param encounterData NAP_EncounterSnapshot
+            --- @return string text
+            local function formatEncounter(index, encounterData)
+                local text = string.format("%d - %s (%s)", index, encounterData.name, encounterData.kill and "Kill" or "Wipe");
+                if not encounterData.isCurrentSession then
+                    text = persistedSnapshotTexture .. " " .. text;
+                end
+
+                return text;
+            end
+
+            --- @param index number
+            --- @param keyData NAP_ChallengeModeSnapshot
+            --- @return string text
+            local function formatChallengeMode(index, keyData)
+                local text = string.format("%d - %s +%d (%s)", index, keyData.mapName, keyData.level, keyData.completed and "Completed" or "Exited");
+                if not keyData.isCurrentSession then
+                    text = persistedSnapshotTexture .. " " .. text;
+                end
+
+                return text;
+            end
 
             function display:UpdateHistoryRangeText()
                 local type, range = NAP:GetActiveHistoryRange();
@@ -1629,8 +1815,14 @@ function NAP:InitUI()
                         historyMenu:OverrideText(LAST_ENCOUNTER);
                     else
                         local encounterData = NAP.encounterSnapshots[range];
-                        local text = string.format("%d - %s (%s)", range, encounterData.name, encounterData.kill and "Kill" or "Wipe");
-                        historyMenu:OverrideText(text);
+                        historyMenu:OverrideText(formatEncounter(range, encounterData));
+                    end
+                elseif HISTORY_TYPE_CHALLENGE_MODE == type then
+                    if HISTORY_LATEST == range then
+                        historyMenu:OverrideText(LAST_KEY);
+                    else
+                        local keyData = NAP.challengeModeSnapshots[range];
+                        historyMenu:OverrideText(formatChallengeMode(range, keyData));
                     end
                 elseif HISTORY_TYPE_COMBAT == type then
                     historyMenu:OverrideText(LAST_COMBAT);
@@ -1677,6 +1869,18 @@ function NAP:InitUI()
 
                 return MenuResponse.Refresh;
             end
+            local function isChallengeModeSelected(data)
+                local selectedIndex = NAP.currentHistorySelection.challengeModeIndex;
+
+                return data.index == selectedIndex or (selectedIndex == HISTORY_LATEST and data.isLatest or false);
+            end
+            local function selectChallengeMode(data)
+                NAP.currentHistorySelection.type = HISTORY_TYPE_CHALLENGE_MODE;
+                NAP.currentHistorySelection.challengeModeIndex = data.index;
+                onAfterSelection();
+
+                return MenuResponse.Refresh;
+            end
 
             --- @param rootDescription RootMenuDescriptionProxy
             historyMenu:SetupMenu(function(_, rootDescription)
@@ -1703,10 +1907,24 @@ function NAP:InitUI()
                     latestIndex = latestIndex - 1;
                 end
                 encounter:CreateRadio(LAST_ENCOUNTER, isEncounterSelected, selectEncounter, { index = HISTORY_LATEST, isLatest = true });
-                for index, encounterData in ipairs(NAP.encounterSnapshots) do
+                for index, encounterData in ipairs_reverse(NAP.encounterSnapshots) do
                     if encounterData.snapshot.isComplete then
-                        local text = string.format("%d - %s (%s)", index, encounterData.name, encounterData.kill and "Kill" or "Wipe");
+                        local text = formatEncounter(index, encounterData);
                         encounter:CreateRadio(text, isEncounterSelected, selectEncounter, { index = index, isLatest = index == latestIndex });
+                    end
+                end
+
+                local challengeMode = rootDescription:CreateRadio("Keystone Dungeons", isTypeSelected, selectType, HISTORY_TYPE_CHALLENGE_MODE);
+                challengeMode:SetTitleAndTextTooltip("Keystone Dungeons", "Show addon performance during keystone dungeon runs.");
+                local latestCMIndex = #NAP.challengeModeSnapshots;
+                if NAP.challengeModeSnapshots[latestCMIndex] and not NAP.challengeModeSnapshots[latestCMIndex].snapshot.isComplete then -- challenge mode is still in progress
+                    latestCMIndex = latestCMIndex - 1;
+                end
+                challengeMode:CreateRadio(LAST_KEY, isChallengeModeSelected, selectChallengeMode, { index = HISTORY_LATEST, isLatest = true });
+                for index, keyData in ipairs_reverse(NAP.challengeModeSnapshots) do
+                    if keyData.snapshot.isComplete then
+                        local text = formatChallengeMode(index, keyData);
+                        challengeMode:CreateRadio(text, isChallengeModeSelected, selectChallengeMode, { index = index, isLatest = index == latestCMIndex });
                     end
                 end
 
@@ -2002,7 +2220,7 @@ function NAP:InitUI()
                     if elementData then
                         self.data = elementData
                     else
-                        self.data = NAP:GetElelementDataForAddon(self.addonName, self.addonInfo, bucketsWithinHistory, nil, overallSnapshotOverrides)
+                        self.data = NAP:GetElementDataForAddon(self.addonName, self.addonInfo, bucketsWithinHistory, nil, overallSnapshotOverrides)
                     end
                     self:UpdateColumns()
                     if not self.data then return end

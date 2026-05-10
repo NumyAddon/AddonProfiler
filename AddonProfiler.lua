@@ -656,14 +656,15 @@ function NAP:ENCOUNTER_END(encounterID, _, difficultyID, _, success)
     end
 end
 
-function NAP:CHALLENGE_MODE_START(mapID)
+function NAP:CHALLENGE_MODE_START()
     if self.db.mode == MODE_PERFORMANCE then
         self.challengeModePeakMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
     end
+    local mapID = C_ChallengeMode.GetActiveChallengeMapID();
     --- @type NAP_ChallengeModeSnapshot
     local snapshot = {
         mapID = mapID,
-        mapName = C_ChallengeMode.GetMapUIInfo(mapID),
+        mapName = C_ChallengeMode.GetMapUIInfo(mapID) or 'unknown',
         level = C_ChallengeMode.GetActiveKeystoneInfo(),
         snapshot = self:InitNewSnapshot(self.challengeModePeakMs),
         completed = false,
@@ -1798,7 +1799,7 @@ function NAP:InitUI()
             --- @param keyData NAP_ChallengeModeSnapshot
             --- @return string text
             local function formatChallengeMode(index, keyData)
-                local text = string.format("%d - %s +%d (%s)", index, keyData.mapName, keyData.level, keyData.completed and "Completed" or "Exited");
+                local text = string.format("%d - %s +%d (%s)", index, keyData.mapName or 'unknown', keyData.level or 0, keyData.completed and "Completed" or "Exited");
                 if not keyData.isCurrentSession then
                     text = persistedSnapshotTexture .. " " .. text;
                 end

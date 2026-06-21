@@ -2446,6 +2446,7 @@ function NAP:InitUI()
             toggleButton:SetScript("OnLeave", function()
                 GameTooltip:Hide()
             end)
+            toggleButton.padding = 40
             DynamicResizeButton_Resize(toggleButton)
 
             toggleButton:SetOnClickHandler(function()
@@ -2474,6 +2475,7 @@ function NAP:InitUI()
             resetButton:SetScript("OnLeave", function()
                 GameTooltip:Hide()
             end)
+            resetButton.padding = 40
             DynamicResizeButton_Resize(resetButton)
 
             resetButton:SetOnClickHandler(function()
@@ -2708,6 +2710,7 @@ function NAP:EnableLogging()
     self.collectData = true;
 
     self.ToggleButton:SetText("Disable")
+    self.ToggleButton.padding = 40
     DynamicResizeButton_Resize(self.ToggleButton)
     self:UpdateMinimapIcon()
 
@@ -2725,6 +2728,7 @@ function NAP:DisableLogging()
     self.collectData = false
 
     self.ToggleButton:SetText("Enable")
+    self.ToggleButton.padding = 40
     DynamicResizeButton_Resize(self.ToggleButton)
     self:UpdateMinimapIcon()
 

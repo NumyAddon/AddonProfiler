@@ -75,3 +75,16 @@
 --- @field encounterID number
 --- @field name string # encounter name
 --- @field kill boolean
+
+--- @class NAP_ColumnInfo.Column
+--- @field ID NAP_HeaderID
+--- @field order number
+--- @field availableInPassiveMode boolean? # defaults to false
+--- @field justifyLeft boolean? # defaults to false
+--- @field title string
+--- @field width number
+--- @field textFormatter (fun(number): string)|(fun(string): string)
+--- @field textFunc nil|fun(NAP_ElementData): string|number # either textKey or textFunc must be defined
+--- @field textKey nil|string # either textKey or textFunc must be defined
+--- @field tooltip nil|string
+--- @field sortMethods {[-1]: fun(NAP_ElementData, NAP_ElementData): boolean, [1]: fun(NAP_ElementData, NAP_ElementData): boolean}

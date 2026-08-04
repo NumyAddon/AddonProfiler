@@ -757,24 +757,24 @@ end
 --- @param snapshot NAP_PartialSnapshot
 function NAP:CloseSnapshot(snapshot)
     --- @type NAP_Snapshot
-    snapshot = snapshot; --[[@as NAP_Snapshot]]
-    snapshot.endMetrics = self:GetCurrentMsSpikeMetrics();
-    snapshot.endTime = GetTime();
-    snapshot.endTick = self.tickNumber;
+    local closedSnapshot = snapshot
+    closedSnapshot.endMetrics = self:GetCurrentMsSpikeMetrics();
+    closedSnapshot.endTime = GetTime();
+    closedSnapshot.endTick = self.tickNumber;
 
-    snapshot.bossAvg = self:GetCurrentMetrics(Enum_AddOnProfilerMetric_EncounterAverageTime);
-    snapshot.recentAvg = self:GetCurrentMetrics(Enum_AddOnProfilerMetric_RecentAverageTime);
+    closedSnapshot.bossAvg = self:GetCurrentMetrics(Enum_AddOnProfilerMetric_EncounterAverageTime);
+    closedSnapshot.recentAvg = self:GetCurrentMetrics(Enum_AddOnProfilerMetric_RecentAverageTime);
 
-    snapshot.total = {};
+    closedSnapshot.total = {};
     if self.db.mode ~= MODE_PASSIVE then
         for addonName, endTotal in pairs(self.totalMs) do
-            snapshot.total[addonName] = endTotal - (snapshot.startTotal[addonName] or 0);
+            closedSnapshot.total[addonName] = endTotal - (closedSnapshot.startTotal[addonName] or 0);
         end
     end
-    snapshot.startTotal = nil;
+    closedSnapshot.startTotal = nil;
 
     if self.db.mode == MODE_ACTIVE then
-        snapshot.peakTime = {};
+        closedSnapshot.peakTime = {};
         -- bucket could be used in the future for things like graphs; for now we just discard it to save on SV size, but one option would be to encode and compress it in the future.
         local bucket = {
             lastTick = {},
@@ -782,23 +782,23 @@ function NAP:CloseSnapshot(snapshot)
             curTickIndex = 0,
         };
         local lastBucket = self.snapshots.lastBucket;
-        for index = snapshot.bucketStartTick, lastBucket.curTickIndex do
+        for index = closedSnapshot.bucketStartTick, lastBucket.curTickIndex do
             local tickIndex = bucket.curTickIndex + 1;
             bucket.curTickIndex = tickIndex;
             bucket.tickMap[tickIndex] = lastBucket.tickMap[index];
         end
         for addonName, lastTicks in pairs(lastBucket.lastTick) do
             RunNextFrame(function()
-                snapshot.peakTime[addonName] = 0;
+                closedSnapshot.peakTime[addonName] = 0;
                 local newTicks = {};
                 local tickIndex = 0;
-                for index = snapshot.bucketStartTick, lastBucket.curTickIndex do
+                for index = closedSnapshot.bucketStartTick, lastBucket.curTickIndex do
                     tickIndex = tickIndex + 1;
                     local lastTick = lastTicks[index];
                     if lastTick then
                         newTicks[tickIndex] = lastTicks[index];
-                        if lastTicks[index] > snapshot.peakTime[addonName] then
-                            snapshot.peakTime[addonName] = lastTicks[index];
+                        if lastTicks[index] > closedSnapshot.peakTime[addonName] then
+                            closedSnapshot.peakTime[addonName] = lastTicks[index];
                         end
                     end
                 end
@@ -806,10 +806,10 @@ function NAP:CloseSnapshot(snapshot)
             end);
         end
     else
-        snapshot.peakTime = snapshot.peakTime or self:GetCurrentMetrics(Enum_AddOnProfilerMetric_PeakTime);
+        closedSnapshot.peakTime = closedSnapshot.peakTime or self:GetCurrentMetrics(Enum_AddOnProfilerMetric_PeakTime);
     end
 
-    snapshot.isComplete = true;
+    closedSnapshot.isComplete = true;
 end
 
 function NAP:GetCurrentMsSpikeMetrics(onlyForAddonName)
@@ -1219,6 +1219,7 @@ function NAP:InitUI()
         return val >= 1 and color:format("100.00%") or color:format(("%.2f%%"):format(val * 100));
     end;
 
+    --- @type table<NAP_HeaderID, NAP_ColumnInfo.Column>
     local COLUMN_INFO = {};
     do
         local totalAddonsText = NORMAL_FONT_COLOR:WrapTextInColorCode("Total Addons");
@@ -1989,12 +1990,13 @@ function NAP:InitUI()
                 local performance = rootDescription:CreateRadio("Performance Mode", isSelected, onSelection, MODE_PERFORMANCE)
                 local passive = rootDescription:CreateRadio("Passive Mode", isSelected, onSelection, MODE_PASSIVE)
 
-                active:SetTitleAndTextTooltip("Active Mode", "Provides the most amount of information, and allows you to select a History Range to filter by.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap active"))
-                performance:SetTitleAndTextTooltip("Performance Mode", "Performs slightly less work in the background, but does not allow you to select a History Range.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap performance"))
+                active:SetTitleAndTextTooltip("Active Mode", "Provides the most amount of information, and allows you to select a Time-based History Range to filter by.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap active"))
+                performance:SetTitleAndTextTooltip("Performance Mode", "Performs slightly less work in the background, but does not allow you to select a Time-based History Range.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap performance"))
                 passive:SetTitleAndTextTooltip("Passive Mode", "No information is collected in the background, which limits the columns that can be displayed. But 0 work is performed in the background while the UI is closed.|n" .. GREEN_FONT_COLOR:WrapTextInColorCode("/nap passive"))
             end)
         end
 
+        --- @class NAP_Display.Headers: ColumnDisplayTemplate
         local headers = CreateFrame("Button", "$parentHeaders", display, "ColumnDisplayTemplate")
         display.Headers = headers
         do
@@ -2259,8 +2261,8 @@ function NAP:InitUI()
         do
             view:SetElementExtent(20)
 
-            --- @param row BUTTON&NAP_RowMixin
-            view:SetElementInitializer("BUTTON", function(row, data)
+            --- @param row Button&NAP_RowMixin
+            view:SetElementInitializer("Button", function(row, data)
                 if not row.initialized then
                     initRow(row)
 

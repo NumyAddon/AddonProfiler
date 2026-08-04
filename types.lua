@@ -42,6 +42,7 @@
 --- @field startTick number # 0 if in passive mode
 --- @field startTime number
 --- @field startTotal table<string, number> # addonName -> ms; empty table if in passive mode
+--- @field peakTime table<string, number> # addonName -> ms
 --- @field bucketStartTick number # 0 if not in active mode
 --- @field isComplete boolean # false until the snapshot is completed
 

@@ -368,7 +368,6 @@ function NAP:InitDB()
     end
 
     --- @class NAP_DB
-    --- @field shownColumns table<NAP_HeaderID, boolean>
     local defaults = {
         enabled = true,
         mode = MODE_ACTIVE,
@@ -376,6 +375,8 @@ function NAP:InitDB()
         minimap = {
             hide = false,
         },
+        --- @type table<NAP_HeaderID, boolean>
+        shownColumns = {},
         pinnedAddons = {},
         historySelectionType = self.currentHistorySelection.type,
         historySelectionTimeRange = self.currentHistorySelection.timeRange,
@@ -405,6 +406,7 @@ function NAP:InitDB()
 
     local characterKey = UnitName('player') .. '-' .. GetRealmName();
     if self.db.persistEncounterSnapshots then
+        --- @type NAP_EncounterSnapshot[]
         self.encounterSnapshots = self.db.persistedEncounterSnapshots[characterKey] or {};
         self.db.persistedEncounterSnapshots[characterKey] = self.encounterSnapshots;
         for _, snapshot in pairs(self.encounterSnapshots) do
@@ -414,6 +416,7 @@ function NAP:InitDB()
         self.db.persistedEncounterSnapshots = {};
     end
     if self.db.persistChallengeModeSnapshots then
+        --- @type NAP_ChallengeModeSnapshot[]
         self.challengeModeSnapshots = self.db.persistedChallengeModeSnapshots[characterKey] or {};
         self.db.persistedChallengeModeSnapshots[characterKey] = self.challengeModeSnapshots;
         for _, snapshot in pairs(self.challengeModeSnapshots) do
@@ -660,7 +663,7 @@ function NAP:CHALLENGE_MODE_START()
     if self.db.mode == MODE_PERFORMANCE then
         self.challengeModePeakMs = { [TOTAL_ADDON_METRICS_KEY] = 0 };
     end
-    local mapID = C_ChallengeMode.GetActiveChallengeMapID();
+    local mapID = C_ChallengeMode.GetActiveChallengeMapID() --[[@as number]];
     --- @type NAP_ChallengeModeSnapshot
     local snapshot = {
         mapID = mapID,
@@ -754,7 +757,7 @@ end
 --- @param snapshot NAP_PartialSnapshot
 function NAP:CloseSnapshot(snapshot)
     --- @type NAP_Snapshot
-    snapshot = snapshot; ---@diagnostic disable-line: assign-type-mismatch
+    snapshot = snapshot; --[[@as NAP_Snapshot]]
     snapshot.endMetrics = self:GetCurrentMsSpikeMetrics();
     snapshot.endTime = GetTime();
     snapshot.endTick = self.tickNumber;
@@ -878,7 +881,8 @@ end
 
 --- @param forceUpdate boolean
 --- @return table<NAP_Bucket, number>? bucketsWithinHistory
---- @return table|nil overallSnapshotOverrides # only nil if there's no update to the dataprovider
+--- @return table? overallSnapshotOverrides # only nil if there's no update to the dataprovider
+--- @return number? applicationTotalMs
 function NAP:PrepareFilteredData(forceUpdate)
     local now = self.frozenAt or GetTime();
 
@@ -911,7 +915,7 @@ function NAP:PrepareFilteredData(forceUpdate)
     self.prevHistoryType = historyType;
     self.prevHistoryIndex = historyIndex;
 
-    local filteredData, displayNothing, bucketsWithinHistory, overallSnapshotOverrides = self:CollectData(self.loadedAddons, self.curMatch);
+    local filteredData, displayNothing, bucketsWithinHistory, overallSnapshotOverrides, applicationTotalMs = self:CollectData(self.loadedAddons, self.curMatch);
 
     self.ProfilerFrame.NoDataText:SetShown(displayNothing);
 
@@ -920,7 +924,7 @@ function NAP:PrepareFilteredData(forceUpdate)
         self.dataProvider:SetSortComparator(self.sortComparator)
     end
 
-    return bucketsWithinHistory, overallSnapshotOverrides;
+    return bucketsWithinHistory, overallSnapshotOverrides, applicationTotalMs;
 end
 
 --- @param collection NAP_SnapshotCollection
@@ -948,6 +952,7 @@ end
 --- @return boolean displayNothing
 --- @return table<NAP_Bucket, number>? bucketsWithinHistory
 --- @return table|nil overallSnapshotOverrides
+--- @return number applicationTotalMs
 function NAP:CollectData(addons, addonFilter)
     local now = self.frozenAt or GetTime();
 
@@ -989,6 +994,7 @@ function NAP:CollectData(addons, addonFilter)
         end
     end
     local overallSnapshotOverrides;
+    local applicationTotalMs = 0;
     local filteredData = {};
     if displayNothing then
         overallSnapshotOverrides = {
@@ -1006,30 +1012,33 @@ function NAP:CollectData(addons, addonFilter)
 
         if snapshot then
             local addonName = TOTAL_ADDON_METRICS_KEY
+            applicationTotalMs = (snapshot.endTime - snapshot.startTime) * 1000;
             overallSnapshotOverrides = {
                 encounterAvg = snapshot.bossAvg[addonName] or 0,
                 recentMs = snapshot.recentAvg[addonName] or 0,
                 peakTime = snapshot.peakTime[addonName] or 0,
                 totalMs = snapshot.total[addonName] or 0,
                 numberOfTicks = snapshot.endTick - snapshot.startTick,
-                applicationTotalMs = (snapshot.endTime - snapshot.startTime) * 1000,
+                applicationTotalMs = applicationTotalMs,
                 startMetrics = snapshot.startMetrics[addonName] or {},
                 endMetrics = snapshot.endMetrics[addonName] or {},
             };
         else
             local addonName = TOTAL_ADDON_METRICS_KEY
+            applicationTotalMs = (now - self.resetTime) * 1000;
             overallSnapshotOverrides = {
                 encounterAvg = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_EncounterAverageTime),
                 recentMs = C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_RecentAverageTime),
                 peakTime = passiveMode and C_AddOnProfiler_GetOverallMetric(Enum_AddOnProfilerMetric_PeakTime) or self.peakMs[addonName],
                 totalMs = self.totalMs[addonName],
                 numberOfTicks = self.tickNumber - self.loadedAtTick[addonName],
-                applicationTotalMs = (now - self.resetTime) * 1000,
+                applicationTotalMs = applicationTotalMs,
                 startMetrics = self.resetBaselineMetrics[addonName],
                 endMetrics = (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName),
             };
         end
         local overallStats = self:GetElementDataForAddon(TOTAL_ADDON_METRICS_KEY, nil, withinHistory, nil, overallSnapshotOverrides);
+        applicationTotalMs = overallStats.applicationTotalMs;
 
         for addonName in pairs(addons) do
             local info = self.addons[addonName];
@@ -1042,7 +1051,7 @@ function NAP:CollectData(addons, addonFilter)
                         peakTime = snapshot.peakTime[addonName] or 0,
                         totalMs = snapshot.total[addonName] or 0,
                         numberOfTicks = overallSnapshotOverrides and overallSnapshotOverrides.numberOfTicks or 0,
-                        applicationTotalMs = overallSnapshotOverrides and overallSnapshotOverrides.applicationTotalMs or 0,
+                        applicationTotalMs = applicationTotalMs,
                         startMetrics = snapshot.startMetrics[addonName] or {},
                         endMetrics = snapshot.endMetrics[addonName] or {},
                     };
@@ -1053,7 +1062,7 @@ function NAP:CollectData(addons, addonFilter)
                         peakTime = passiveMode and C_AddOnProfiler_GetAddOnMetric(addonName, Enum_AddOnProfilerMetric_PeakTime) or self.peakMs[addonName],
                         totalMs = self.totalMs[addonName],
                         numberOfTicks = self.tickNumber - self.loadedAtTick[addonName],
-                        applicationTotalMs = (now - self.resetTime) * 1000,
+                        applicationTotalMs = applicationTotalMs,
                         startMetrics = self.resetBaselineMetrics[addonName],
                         endMetrics = (self.frozenMetrics and self.frozenMetrics[addonName]) or self:GetCurrentMsSpikeMetrics(addonName),
                     };
@@ -1063,7 +1072,7 @@ function NAP:CollectData(addons, addonFilter)
         end
     end
 
-    return filteredData, displayNothing, withinHistory, overallSnapshotOverrides
+    return filteredData, displayNothing, withinHistory, overallSnapshotOverrides, applicationTotalMs;
 end
 
 --- @param addonName string
@@ -1470,7 +1479,7 @@ function NAP:InitUI()
             end
 
             function display:DoUpdate(force)
-                local bucketsWithinHistory, overallSnapshotOverrides = NAP:PrepareFilteredData(force)
+                local bucketsWithinHistory, overallSnapshotOverrides, applicationTotalMs = NAP:PrepareFilteredData(force)
                 if overallSnapshotOverrides then
                     self.TotalRow:Update(nil, bucketsWithinHistory, overallSnapshotOverrides)
 
@@ -1483,6 +1492,7 @@ function NAP:InitUI()
                     end
 
                     self.Stats:Update()
+                    self.TimeText:Update(applicationTotalMs)
                 end
 
                 self.elapsed = 0
@@ -1701,9 +1711,11 @@ function NAP:InitUI()
                 do
                     closeOnEsc:SetTitleAndTextTooltip("Close on ESC", "Choose whether the window should close when pressing ESC.");
 
+                    --- @param data string
                     local function isSelected(data)
                         return NAP.db.closeOnEsc == data;
                     end
+                    --- @param data string
                     local function setSelected(data)
                         NAP.db.closeOnEsc = data;
                         display:UpdateCloseOnEsc();
@@ -2197,9 +2209,9 @@ function NAP:InitUI()
             end
 
             --- @param parent Frame? # defaults to UIParent
-            --- @return NAP_StandloneRow
+            --- @return NAP_StandaloneRow
             makeStandaloneRow = function(parent)
-                --- @class NAP_StandloneRow: NAP_RowMixin
+                --- @class NAP_StandaloneRow: NAP_RowMixin
                 local row = CreateFrame("Button", nil, parent or UIParent)
                 initRow(row)
 
@@ -2220,7 +2232,7 @@ function NAP:InitUI()
                 function row:Update(elementData, bucketsWithinHistory, overallSnapshotOverrides)
                     if elementData then
                         self.data = elementData
-                    else
+                    elseif overallSnapshotOverrides then
                         self.data = NAP:GetElementDataForAddon(self.addonName, self.addonInfo, bucketsWithinHistory, nil, overallSnapshotOverrides)
                     end
                     self:UpdateColumns()
@@ -2247,7 +2259,7 @@ function NAP:InitUI()
         do
             view:SetElementExtent(20)
 
-            --- @param row BUTTON|NAP_RowMixin
+            --- @param row BUTTON&NAP_RowMixin
             view:SetElementInitializer("BUTTON", function(row, data)
                 if not row.initialized then
                     initRow(row)
@@ -2414,17 +2426,35 @@ function NAP:InitUI()
             end)
         end
 
+        --- @class NAP_Display.Stats: FontString
         local stats = display:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         display.Stats = stats
         do
             stats:SetPoint("LEFT", updateButton, "RIGHT", 6, 0)
-            stats:SetSize(300, 20)
+            stats:SetHeight(20)
             stats:SetJustifyH("LEFT")
             stats:SetWordWrap(false)
 
             local STATS_FORMAT = "|cfff8f8f2%s|r"
             function stats:Update()
                 self:SetFormattedText(STATS_FORMAT, NAP.collectData and (continuousUpdate and "Live Updating List" or "Paused") or "List is |cffff0000frozen|r")
+            end
+        end
+
+        --- @class NAP_Display.TimeText: FontString
+        local timeText = display:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        display.TimeText = timeText
+        do
+            timeText:SetPoint("LEFT", stats, "RIGHT", 6, 0)
+            timeText:SetHeight(20)
+            timeText:SetJustifyH("LEFT")
+            timeText:SetWordWrap(false)
+
+            --- @param applicationTotalMs number
+            function timeText:Update(applicationTotalMs)
+                local seconds = math.ceil(applicationTotalMs / 1000)
+                local minutes = seconds / 60
+                self:SetFormattedText("%02d:%02d", minutes, seconds % 60)
             end
         end
 
@@ -2593,7 +2623,7 @@ function NAP:InitUI()
             if self.pinnedAddons[addonName] or not NAP.addons[addonName] then
                 return;
             end
-            --- @type NAP_StandloneRow
+            --- @type NAP_StandaloneRow
             local row = self.rowPool:Acquire();
             row:Init(addonName);
             row:Hide();
@@ -2656,7 +2686,7 @@ function NAP:InitUI()
             end
 
             for i, addonName in ipairs(self.addonOrder) do
-                --- @type NAP_StandloneRow?
+                --- @type NAP_StandaloneRow?
                 local row = self.pinnedAddons[addonName];
                 if row then
                     local elementData = elementDataByAddon[addonName];
@@ -2815,7 +2845,7 @@ function NAP:InitMinimapButton()
 end
 
 do
-    function NumyAddonProfiler_OnAddonCompartmentClick(_, mouseButton)
+    _G.NumyAddonProfiler_OnAddonCompartmentClick = function(_, mouseButton)
         if mouseButton == 'LeftButton' then
             NAP:ToggleFrame();
         else
@@ -2826,7 +2856,7 @@ do
             end
         end
     end
-    function NumyAddonProfiler_OnAddonCompartmentEnter(_, button)
+    _G.NumyAddonProfiler_OnAddonCompartmentEnter = function(_, button)
         GameTooltip:SetOwner(button, 'ANCHOR_RIGHT');
         GameTooltip:AddLine('Addon Profiler ' .. (
             NAP:IsLogging() and GREEN_FONT_COLOR:WrapTextInColorCode("enabled") or RED_FONT_COLOR:WrapTextInColorCode("disabled")
@@ -2835,7 +2865,7 @@ do
         GameTooltip:AddLine(CreateAtlasMarkup('NPE_RightClick', 18, 18) .. ' to toggle logging');
         GameTooltip:Show();
     end
-    function NumyAddonProfiler_OnAddonCompartmentLeave()
+    _G.NumyAddonProfiler_OnAddonCompartmentLeave = function()
         GameTooltip:Hide();
     end
 end

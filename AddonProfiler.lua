@@ -209,18 +209,18 @@ function NAP:Init()
         self:SlashCommand(message);
     end;
     RunNextFrame(function()
-        if NumyProfiler then -- the irony of profiling the profiler (-:
-            self.OnUpdateActiveMode = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'OnUpdateActiveMode', self.OnUpdateActiveMode);
-            self.OnUpdatePerformanceMode = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'OnUpdatePerformanceMode', self.OnUpdatePerformanceMode);
-            self.PurgeOldData = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PurgeOldData', self.PurgeOldData);
-            self.ENCOUNTER_START = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'ENCOUNTER_START', self.ENCOUNTER_START);
-            self.ENCOUNTER_END = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'ENCOUNTER_END', self.ENCOUNTER_END);
-            self.PLAYER_REGEN_DISABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_DISABLED', self.PLAYER_REGEN_DISABLED);
-            self.PLAYER_REGEN_ENABLED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_REGEN_ENABLED', self.PLAYER_REGEN_ENABLED);
-            self.CHALLENGE_MODE_START = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'CHALLENGE_MODE_START', self.CHALLENGE_MODE_START);
-            self.CHALLENGE_MODE_COMPLETED = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'CHALLENGE_MODE_COMPLETED', self.CHALLENGE_MODE_COMPLETED);
-            self.PLAYER_LEAVING_WORLD = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'PLAYER_LEAVING_WORLD', self.PLAYER_LEAVING_WORLD);
-            self.GetElementDataForAddon = NumyProfiler:Wrap(thisAddonName, 'ProfilerCore', 'GetElementDataForAddon', self.GetElementDataForAddon);
+        if NumyFunctionProfiler then -- the irony of profiling the profiler (-:
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'OnUpdateActiveMode');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'OnUpdatePerformanceMode');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'PurgeOldData');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'ENCOUNTER_START');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'ENCOUNTER_END');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'PLAYER_REGEN_DISABLED');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'PLAYER_REGEN_ENABLED');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'CHALLENGE_MODE_START');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'CHALLENGE_MODE_COMPLETED');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'PLAYER_LEAVING_WORLD');
+            NumyFunctionProfiler:WrapInPlace(thisAddonName, 'ProfilerCore', self, 'GetElementDataForAddon');
         end
 
         if C_AddOns.IsAddOnLoaded('BlizzMove') then
@@ -714,7 +714,7 @@ function NAP:StartPurgeTicker()
     if self.purgerTicker then
         self.purgerTicker:Cancel()
     end
-    -- continiously purge older entires
+    -- continuously purge older entries
     self.purgerTicker = C_Timer.NewTicker(5, function() self:PurgeOldData() end)
 end
 

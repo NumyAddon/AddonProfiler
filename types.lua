@@ -38,13 +38,13 @@
 --- @field curTickIndex number
 
 --- @class NAP_PartialSnapshot
+--- @field isComplete false # false until the snapshot is completed
 --- @field startMetrics table<string, table<number, number>> # addonName -> {ms -> numberOfMsSpikes}
 --- @field startTick number # 0 if in passive mode
 --- @field startTime number
 --- @field startTotal table<string, number> # addonName -> ms; empty table if in passive mode
 --- @field peakTime table<string, number> # addonName -> ms
 --- @field bucketStartTick number # 0 if not in active mode
---- @field isComplete boolean # false until the snapshot is completed
 
 --- @class NAP_Snapshot: NAP_PartialSnapshot
 --- @field isComplete true

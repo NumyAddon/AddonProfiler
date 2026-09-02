@@ -927,7 +927,7 @@ function NAP:PrepareFilteredData(forceUpdate)
     return bucketsWithinHistory, overallSnapshotOverrides, applicationTotalMs;
 end
 
---- @param collection NAP_SnapshotCollection
+--- @param collection NAP_SnapshotCollection[]
 --- @param preferredIndex number
 --- @return NAP_Snapshot|nil
 function NAP:GetSnapshotFromCollection(collection, preferredIndex)
@@ -2220,7 +2220,7 @@ function NAP:InitUI()
                 function row:Init(addonName)
                     self.addonName = addonName
                     self.addonInfo = addonName == TOTAL_ADDON_METRICS_KEY
-                        and { title = "|cnNORMAL_FONT_COLOR:Addon Total|r", notes = "Stats for all addons combined", }
+                        and { title = "|cnNORMAL_FONT_COLOR:Addon Total|r", notes = "Stats for all addons combined", iconMarkup = '' }
                         or NAP.addons[addonName]
                 end
 

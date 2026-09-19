@@ -2454,6 +2454,7 @@ function NAP:InitUI()
 
             --- @param applicationTotalMs number
             function timeText:Update(applicationTotalMs)
+                if applicationTotalMs <= 0  then return end
                 local seconds = math.ceil(applicationTotalMs / 1000)
                 local minutes = seconds / 60
                 self:SetFormattedText("%02d:%02d", minutes, seconds % 60)

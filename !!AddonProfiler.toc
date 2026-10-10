@@ -2,7 +2,7 @@
 ## Version: @project-version@
 ## Interface: @toc-version-midnight@, @toc-version-retail@, @toc-version-forever@, @toc-version-mists@, @toc-version-cata@, @toc-version-wrath@, @toc-version-bcc@, @toc-version-classic@
 #@debug@
-## Interface: 120000
+## Interface: 120000, 16001
 #@end-debug@
 ## Notes: AddonProfiler is a pretty UI for blizzard's addon profiling stats.
 ## Author: Numy
@@ -21,9 +21,12 @@
 ## Category-esES: Herramientas de Desarrollo
 ## Category-esMX: Herramientas de Desarrollo
 ## Category-frFR: Outils de Développement
+## Category-itIT: Strumenti di sviluppo
+## Category-koKR: 개발 도구
 ## Category-ptBR: Ferramentas de Desenvolvimento
 ## Category-ruRU: Инструменты разработки
 ## Category-zhCN: 开发工具
+## Category-zhTW: 開發工具
 
 libs\embeds.xml
 AddonProfiler.lua
